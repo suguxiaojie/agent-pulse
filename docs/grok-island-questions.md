@@ -10,7 +10,9 @@
 
 配置修改保留其他内容、注释及换行；已启用时不写文件。仅备份共享开关的原值、原文件是否存在与 SHA-256，不复制其他模型参数或凭据。备份采用 0600 权限，写前复核文件内容，原子替换后回读；链接、不可写文件、歧义格式、复杂多行写法及并发更改拒绝自动处理。关闭监控不自动还原全局共享设置，避免影响原生终端和其他客户端；备份保留供显式回退。
 
-`GrokSharedClient.swift` 仅连接已存在的官方 `$GROK_HOME/leader.sock`，核对所有者、写权限、peer UID 和协议版本；每个连接有独立 epoch。通过只读 `_x.ai/session/info` 确认本机已登记会话的 ID 与 cwd 后订阅未来事件，不调用 initialize／load／resume／prompt。无已登记终端时断开，不阻止原生服务正常退出。
+`GrokSharedClient.swift` 仅连接已存在的官方 `$GROK_HOME/leader.sock` 及同目录按官方约定命名的 `leader-*.sock`（`GrokLauncher.sharedSockets` 只收同用户、非链接的 socket，最多 32 个；`GrokRuntime` 每个 socket 一个客户端，合并问题并按来源路由回答，socket 消失即撤下其问题），核对所有者、写权限、peer UID 和协议版本；每个连接有独立 epoch。通过只读 `_x.ai/session/info` 确认本机已登记会话的 ID 与 cwd 后订阅未来事件，不调用 initialize／load／resume／prompt。无已登记终端时断开，不阻止原生服务正常退出。
+
+原生 `Question.multi_select` 为可选布尔值，ACP 中可能发送 `multiSelect: null`；缺失或 null 均按默认单选解释，true／false 保留原意，其他类型仍拒绝。2026-11-01 实际共享测试暴露旧解析器把 null 当非法值、丢弃整道单选题；回归同时覆盖原生空值的帧收取与回答，不能只用显式 true 的合成多选题验收。
 
 会话查询的实际回执是 JSON-RPC `result` 中再嵌套 `ExtMethodResult.result`，其内 `SessionInfoResponse` 的 `sessionId`、`cwd` 与模型／轮次字段位于同层；不是 `success/data` 结构。已核对 [原生结果包装](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-shell/src/session/result.rs) 与 [会话字段定义](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-shell/src/session/acp_types.rs)，并查询官方 CLI 确认空 resident 的原生 `result.result={}` 不会被误认为有效会话。错误或部分结果不授予交互能力。
 
@@ -23,6 +25,10 @@ Pulse 尊重自身的 `GROK_HOME`，未设置时使用 `~/.grok`；正常终端�
 提交后锁定该请求，不以发送成功宣称操作已生效。原终端先答、原生 resolved、轮次结束、断线或关闭接入时撤销控件；连接断开不发送 cancelled，不重发结果不明的回答。事件回调有递增修订号，旧回调不能恢复已撤销的请求。沿用现有灵动岛焦点抢占、草稿、中文输入及隐私隐藏。
 
 限制：不通过 session/load 回放既有问题，因此首次连接和重连之前已存在的问题回原终端处理。共享模式并不让当前独立终端变成可被旁路回答的会话。
+
+2026-11-01 每终端独立 leader：共享模式下 Grok 由 leader 执行 Hook，Hook 继承启动该 leader 的第一个终端的环境；退出后 leader（`--no-exit-on-disconnect`）成为孤儿，重开或第二个终端的 Hook 都带着旧终端身份，OneNative 的 Task Core 因此拒绝。隔离实验（`scripts/grok-leader-socket-check.py`，位于 OneNative）确认：以 `--leader-socket` 启动时每个终端的 leader 是本终端 Grok 的直接子进程、Hook 带本终端环境，不写共享 `leader.lock`。OneNative 终端的 `grok` 包装函数与 `host-exec` 为每次启动分配 `$GROK_HOME/leader-onenative-<终端>-<随机>.sock`，Grok 退出后只停止成为孤儿的本终端 leader；Pulse 随之逐个连接这些 socket。OneNative 以外的终端仍使用默认共享 leader。
+
+创建新会话不等于重新启动 CLI：`/new` 仍沿用原进程的启动模式。若共享配置已启用、没有共享 Socket，且经过存活验证的 Grok 进程早于该配置更新，监控中心会明确提示在任务结束后退出 CLI 再正常运行；建立真实共享连接后，该诊断不再覆盖连接状态。日志中的旧选择仍不会变成可提交的按钮。
 
 ## 已核对的协议
 

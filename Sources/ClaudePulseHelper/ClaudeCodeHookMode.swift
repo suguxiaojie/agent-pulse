@@ -41,6 +41,7 @@ struct ClaudeCodeRoute: Decodable {
     let decisionTimeoutSeconds: Double?
     let statusLineSnapshotPath: String?
     let statusLineForwardCommand: String?
+    let statusLineStackWithDefault: Bool?
 
     static func read(from path: String) -> ClaudeCodeRoute? {
         let descriptor = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)

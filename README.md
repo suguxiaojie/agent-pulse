@@ -1,20 +1,20 @@
 <div align="center">
 
-<img src="Resources/Pulse-Logo.svg" alt="Codex Pulse 标识" width="72">
+<img src="Resources/Pulse-Logo.svg" alt="Agent Pulse 标识" width="72">
 
-# Codex Pulse
+# Agent Pulse
 
-**在菜单栏和刘海里，看清 Codex、Claude Code 与 Grok CLI 的额度、任务和本机用量。**
+**在菜单栏和刘海里，看清 Codex、Claude Code、Grok CLI 与 Google Antigravity 的额度、任务和本机用量。**
 
-[English](README.en.md) · [下载 v1.12.0](https://github.com/suguxiaojie/codex-pulse/releases/tag/v1.12.0) · [MIT License](LICENSE)
+[English](README.en.md) · [下载 v2.0.0](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.0.0) · [MIT License](LICENSE)
 
 macOS 13+ · 原生 SwiftUI / AppKit · Apple Silicon / Intel
 
 </div>
 
-Codex Pulse 是原生 macOS 菜单栏应用。官方额度来自本机 Codex App Server、Claude 状态栏和 xAI 官方 `grok`；任务来自桌面 IPC、专属 Hook 或经过进程核对的本地记录。Pulse 不读取账号凭据。
+Agent Pulse 是原生 macOS 菜单栏应用。官方额度来自本机 Codex App Server、Claude 状态栏、xAI 官方 `grok` 与 Google Antigravity `agy` 状态栏；任务来自桌面 IPC、专属 Hook 或经过进程核对的本地记录。Pulse 不读取账号凭据。
 
-当前版本 **v1.12.0（Build 34）** 把这三路接进同一套界面：刘海里的灵动岛、菜单栏玻璃面板，以及监控中心。
+当前版本 **v2.0.0（Build 35）** 把这四路接进同一套界面：刘海里的灵动岛、菜单栏玻璃面板，以及监控中心。
 
 ## 灵动岛
 
@@ -30,9 +30,9 @@ Codex Pulse 是原生 macOS 菜单栏应用。官方额度来自本机 Codex App
   <img src="docs/images/pulse-island-usage.png" alt="灵动岛用量统计：Grok CLI 每周剩余 91%，SuperGrok Plus、共享额度池、预付余额和本机 Token" width="42%">
 </p>
 
-- 岛体与刘海同色，顶部内凹，边缘有一圈跟随任务状态的细光。Codex 任务显示终端图标，Claude Code 显示 Clawd，Grok CLI 显示 Grok Bot。
+- 岛体与刘海同色，顶部内凹，边缘有一圈跟随任务状态的细光。Codex 任务显示终端图标，Claude Code 显示 Clawd，Grok CLI 显示 Grok Bot，Google Antigravity 显示浮游星核。
 - 新的待批准或待回复会自动占住焦点。你可以在岛里选择、勾选或输入文字；Grok 的工具请求可以「允许一次」或「拒绝一次」，保留原生选项，不生成长期授权。其他请求交回原客户端。不会自动批准。
-- One Native 的当前提问从已经在跑的共享 Codex daemon 读取，回答限定在当前活动轮次。已结束的轮次交回原客户端。详见 [One Native 接入边界](docs/one-native-questions.md)。
+- OneNative 受管 Codex 新启动的终端独立 App Server，以及已经在跑的共享 daemon，均可提供原生异步提问；无需指定文件夹。回答限定在当前活动轮次，已结束轮次交回原客户端。已有 `--no-daemon` 独立进程保持原模式，不会被热迁移。详见 [OneNative 接入边界](docs/one-native-questions.md)。
 - 「Fast」只在当前会话明确开启时出现。缺少记录时不显示，也不用全局配置猜测。
 - 任务完成可以播放提示音，并按轻、标准、热烈三档放礼花。减弱动态效果后，进度特效和礼花改为静止。
 - 关注信号、额度恢复，以及重置卡到期前 24、12、6 小时，会同时走系统通知和岛内提醒。应用没开时不补历史，重新打开只补当前最紧迫的一条。
@@ -77,6 +77,7 @@ Codex Pulse 是原生 macOS 菜单栏应用。官方额度来自本机 Codex App
 - 删除项目时可以只删会话，也可以把该项目独立文件夹整份移入废纸篓。移文件夹前会核对唯一登记和原始工作目录，并要求输入文件夹名。共享目录、嵌套项目、符号链接或路径对不上时，只保留删会话。
 - **Claude Code** 默认关闭。打开前先备份 `settings.json`，只改 Pulse 自己的条目；关掉时恢复原来的状态栏，其他工具的配置留着。灵动岛显示本轮公开进展和真实工具步骤，Bash 显示命令描述。监控重启后，只恢复本地登记里仍然忙碌的会话。
 - **Grok CLI** 默认关闭。打开后每分钟用一次短生命周期的官方 CLI 查询剩余额度，也可以手动刷新。临时的上游或网络故障会在总时限内短重试；持续失败时保留带标记的上次观测，周期真正结束后不再显示旧比例。不把上下文长度当成订阅额度。实时任务必须对得上进程身份，空闲终端和旧的完成记录不会再响一次。
+- **Google Antigravity** 默认关闭。启用后统一扫描本机 Antigravity 2.0 桌面端、IDE 与 `agy` CLI 三端会话用量，按公开标准费率折算已知模型并在含内部代号模型时以 `≥` 标出下界。可选挂载 `~/.gemini/config/hooks.json` 专属生命周期项（不注册 `PreToolUse`、不自动批准）与 `agy` 状态栏配额／AI Credits 采集（保留并转发原有状态栏，停用完整恢复）。详见 [Antigravity 接入](docs/antigravity-integration.md)。
 
 自动接入只在你打开 Grok 时管理官方共享启动开关 `cli.use_leader`，并先备份原来的值。之后照常运行 `grok`，Pulse 识别会话和项目，不替你选目录，也不另开终端。已经在跑的独立任务不会被重启或迁走。断线不取消原请求，结果不清楚时不重发。关闭 Pulse 的监控不会改回这个开关，原来的备份可以自己恢复。说明见 [Grok CLI 接入](docs/grok-cli-integration.md) 和 [岛内问答边界](docs/grok-island-questions.md)。
 
@@ -102,12 +103,12 @@ Codex Pulse 是原生 macOS 菜单栏应用。官方额度来自本机 Codex App
 
 ## 下载与安装
 
-在 [GitHub Releases](https://github.com/suguxiaojie/codex-pulse/releases/tag/v1.12.0) 下载和这台 Mac 对应的安装包：
+在 [GitHub Releases](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.0.0) 下载和这台 Mac 对应的安装包：
 
 | Mac 处理器 | 安装包 |
 |---|---|
-| Apple Silicon（M 系列） | [arm64 DMG](https://github.com/suguxiaojie/codex-pulse/releases/download/v1.12.0/CodexNotchMonitor-v1.12.0-arm64.dmg) |
-| Intel | [x86_64 DMG](https://github.com/suguxiaojie/codex-pulse/releases/download/v1.12.0/CodexNotchMonitor-v1.12.0-x86_64.dmg) |
+| Apple Silicon（M 系列） | [arm64 DMG](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.0.0/CodexNotchMonitor-v2.0.0-arm64.dmg) |
+| Intel | [x86_64 DMG](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.0.0/CodexNotchMonitor-v2.0.0-x86_64.dmg) |
 
 1. 打开 DMG，把 App 拖进「应用程序」。
 2. 启动 App。Codex 额度需要本机已登录的 Codex／ChatGPT Desktop。
@@ -115,21 +116,22 @@ Codex Pulse 是原生 macOS 菜单栏应用。官方额度来自本机 Codex App
 
 安装包是临时签名，还没有 Apple 公证。如果系统拦住第一次打开，先确认下载来源，再在「系统设置 → 隐私与安全性」里允许。
 
-应用由 Codex Monitor 更名而来。Bundle ID、`CodexNotchMonitor.app` 文件名、偏好和数据目录都沿用原来的值，升级后配置和数据还在。应用里的「检查更新」只打开下载页，安装由你自己完成。
+应用由 Codex Pulse（原 Codex Monitor）升级更名为 **Agent Pulse**。Bundle ID、`CodexNotchMonitor.app` 文件名、偏好和数据目录都沿用原来的值，升级后配置和数据还在。应用里的「检查更新」只打开下载页，安装由你自己完成。
 
 ## 数据从哪来
 
 | 内容 | 来源 |
 |---|---|
 | Codex 官方额度与账号 | 本机 Codex App Server。显示的是额度比例和重置时间，不是剩余消息条数 |
+| Claude／Grok／Antigravity 额度 | Claude 状态栏、官方 `grok` `_x.ai/billing` 与 Antigravity `agy` 状态栏（Gemini／合作池比例窗口及 AI Credits 分开展示） |
 | 额度预报 | 用当前窗口已用比例和已经过去的时间估算。周期开始不到 1 小时时不预报 |
 | Token 与项目统计 | 本机还能读到的结构化会话日志，包含缓存 |
-| 实时任务 | Codex 用桌面 IPC 和本地日志；Claude Code 用专属 Hook 和本地登记；Grok CLI 用对得上进程身份的本地通知 |
-| 成本 | Codex、Claude 按 Token × 公开价格估算；Grok 用 CLI 报告的轮次成本。都不是订阅账单，未知金额会标出来 |
+| 实时任务 | Codex 用桌面 IPC 和本地日志；Claude Code 用专属 Hook 和本地登记；Grok CLI 用经过进程核对的本地共享通道；Antigravity 覆盖 2.0 桌面端、IDE 与 CLI 三端转录、文件锁与生命周期 Hook |
+| 成本 | Codex、Claude、Antigravity 按 Token × 官方公开单价估算；Grok 用 CLI 报告的轮次成本。都不是订阅账单，未知金额会标出来 |
 | 社区动态与预测 | 第三方聚合 [codex-reset.com](https://codex-reset.com/zh/tibo) |
 | 会话账号归属 | 只记录可靠看到的归属。基线之前或证据不够的会话保持「未归属」 |
 
-- 不读 `auth.json`、Cookie、API Key、Claude 凭据或钥匙串。本地会话、项目和用量不会上传到社区源或价格目录。
+- 不读 `auth.json`、Cookie、API Key、Claude／Antigravity 凭据、邮箱或钥匙串。本地会话、项目和用量不会上传到社区源或价格目录。
 - Codex 任务监控不安装 Hook，也不写 Codex 客户端配置。
 - 导入、恢复、删除、迁移和手动重置额度都要你先点，执行前能看到影响范围。重置额度要再确认一次。
 - 可读导出默认遮住敏感正文。原始备份和迁移包里可能有源码、提示词和附件，请自己保管。
@@ -139,14 +141,14 @@ Codex Pulse 是原生 macOS 菜单栏应用。官方额度来自本机 Codex App
 需要 Swift 6 工具链和 macOS 构建工具，没有第三方 Swift Package。
 
 ```bash
-git clone https://github.com/suguxiaojie/codex-pulse.git
-cd codex-pulse
+git clone https://github.com/suguxiaojie/agent-pulse.git
+cd agent-pulse
 ./scripts/build-app.sh native        # 构建当前架构
 open build/CodexNotchMonitor.app
 ```
 
 ```bash
-./scripts/test.sh                    # 完整测试，包含 Claude 接入
+./scripts/test.sh                    # 完整测试，包含 Claude、Grok 与 Antigravity 接入
 SKIP_COST_SMOKE_TESTS=1 ./scripts/test.sh
 ./scripts/build-dmg.sh arm64         # Apple Silicon 安装包
 ./scripts/build-dmg.sh x86_64        # Intel 安装包
@@ -157,6 +159,7 @@ SKIP_COST_SMOKE_TESTS=1 ./scripts/test.sh
 - [灵动岛审批](docs/island-approvals.md)
 - [Claude Code 接入](docs/claude-code-integration.md)
 - [Grok CLI 接入](docs/grok-cli-integration.md)
+- [Google Antigravity 接入](docs/antigravity-integration.md)
 - [压缩历史会话](docs/compressed-rollouts.md)
 - [项目进度](ROADMAP.md)
 
@@ -164,6 +167,6 @@ SKIP_COST_SMOKE_TESTS=1 ./scripts/test.sh
 
 感谢 [Codex Island](https://github.com/ericjypark/codex-island)、[QuotaView](https://github.com/Duoasa/QuotaView) 和 [Open Claude UI](https://github.com/Caho1/open-claude-ui)。第三方来源和完整许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-本项目采用 [MIT License](LICENSE)，Copyright (c) 2026 CoverAI。Codex Pulse 是独立项目，与 OpenAI、Anthropic、xAI 没有官方关联。
+本项目采用 [MIT License](LICENSE)，Copyright (c) 2026 CoverAI。Agent Pulse 是独立项目，与 OpenAI、Anthropic、xAI、Google 没有官方关联。
 
 支持项目：[CoverAI 自家代充服务](https://www.coverai.store/)。

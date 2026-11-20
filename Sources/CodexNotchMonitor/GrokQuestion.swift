@@ -64,7 +64,8 @@ struct GrokQuestionRequest: Equatable, Identifiable {
         for q in list {
             guard let text = q["question"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   text.count <= 4000, let options = q["options"] as? [[String: Any]], options.count <= 16 else { return nil }
-            let multi = q["multiSelect"] ?? q["multi_select"]
+            let rawMulti = q["multiSelect"] ?? q["multi_select"]
+            let multi = rawMulti is NSNull ? nil : rawMulti
             if let multi, !(multi is NSNumber && CFGetTypeID(multi as! NSNumber) == CFBooleanGetTypeID()) { return nil }
             var choices: [Question.Option] = []
             for option in options {
@@ -151,6 +152,11 @@ struct GrokQuestionState {
                 requests = requests.filter { $0.value.sessionID != session }; turns[session] = nil
                 tools = tools.filter { $0.value.session != session }
             }
+        } else if method == "x.ai/session_notification", update["sessionUpdate"] as? String == "pending_interaction",
+                  let tool = (update["tool_call_id"] ?? update["toolCallId"]) as? String {
+            // Grok can resolve and then re-register the same tool call (observed live: pending, resolved,
+            // pending, then the real request). A fresh pending re-arms it; without one, late duplicates stay rejected.
+            resolved.removeAll { $0 == session + ":" + tool }
         } else if method == "x.ai/session_notification", update["sessionUpdate"] as? String == "interaction_resolved",
                   let tool = (update["tool_call_id"] ?? update["toolCallId"]) as? String {
             requests = requests.filter { !($0.value.sessionID == session && $0.value.toolCallID == tool) }

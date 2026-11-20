@@ -110,7 +110,8 @@ import SwiftUI
         expect(IslandClawdBadgeRenderer.timing(.start, species: .codex).duration == IslandClawdBadgeRenderer.timing(.start, species: .clawd).duration,
                "both pets hand off from start to work at the same moment")
         expect(IslandPetSpecies(provider: "Codex") == .codex && IslandPetSpecies(provider: "Claude Code") == .clawd
-               && IslandPetSpecies(provider: "Grok CLI") == .grok, "provider picks the pet")
+               && IslandPetSpecies(provider: "Grok CLI") == .grok
+               && IslandPetSpecies(provider: "Antigravity") == .antigravity, "provider picks the pet")
         // Grok Bot: its own art for every state, the same start hand-off as the other pets.
         for state: IslandClawdBadgeState in [.idle, .start, .think, .tool, .approve, .reply, .done, .fail] {
             let grok = IslandClawdBadgeRenderer.images(state, pixel: 2.2, scale: 2, gaze: 0, species: .grok)
@@ -118,9 +119,16 @@ import SwiftUI
             expect(IslandClawdBadgeRenderer.stillImage(state, pixel: 2.2, scale: 2, species: .grok) != nil, "Grok expression renders")
             let codexFirst = IslandClawdBadgeRenderer.images(state, pixel: 2.2, scale: 2, gaze: 0, species: .codex).first
             expect(grok.first?.dataProvider?.data as Data? != codexFirst?.dataProvider?.data as Data?, "Grok art differs from Codex")
+
+            let agy = IslandClawdBadgeRenderer.images(state, pixel: 2.2, scale: 2, gaze: 0, species: .antigravity)
+            expect(agy.count == IslandAntigravityClips.clip(state).frames.count, "every Antigravity frame renders")
+            expect(IslandClawdBadgeRenderer.stillImage(state, pixel: 2.2, scale: 2, species: .antigravity) != nil, "Antigravity expression renders")
+            expect(agy.first?.dataProvider?.data as Data? != grok.first?.dataProvider?.data as Data?, "Antigravity art differs from Grok")
         }
         expect(IslandClawdBadgeRenderer.timing(.start, species: .grok).duration == IslandClawdBadgeRenderer.timing(.start, species: .clawd).duration,
                "Grok hands off from start to work with the other pets")
+        expect(IslandClawdBadgeRenderer.timing(.start, species: .antigravity).duration == IslandClawdBadgeRenderer.timing(.start, species: .clawd).duration,
+               "Antigravity hands off from start to work with the other pets")
         let grokBadge = IslandClawdBadgeView(frame: .zero)
         grokBadge.apply(mood: .approve, pixel: 2.2, gaze: 0, reduceMotion: true, playing: true, species: .grok)
         expect(grokBadge.shown == .approve && grokBadge.species == .grok, "badge shows the Grok pet")

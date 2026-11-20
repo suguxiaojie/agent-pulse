@@ -42,6 +42,7 @@ struct IslandUsagePresentation: Equatable {
         case codex(planName: String, creditBalance: String?, resetCount: Int?)
         case claude
         case grok(plan: String, shared: Bool?, prepaidCents: Int?)
+        case antigravity(plan: String, credits: Int?, useG1Credits: Bool?)
     }
     let provider: IslandUsageProvider
     let quotas: [Quota]

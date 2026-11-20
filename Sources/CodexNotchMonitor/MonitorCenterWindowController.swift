@@ -130,7 +130,7 @@ final class MonitorCenterWindowController: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Codex Pulse"
+        window.title = "Agent Pulse"
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.backgroundColor = .clear

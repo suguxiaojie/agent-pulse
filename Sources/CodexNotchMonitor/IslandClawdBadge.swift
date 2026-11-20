@@ -24,14 +24,91 @@ enum IslandClawdBadgeState: Equatable, Hashable {
 }
 
 /// Which pet stands in for the task's client: Clawd for Claude Code, the Grok Bot pebble for Grok CLI,
-/// the Prompt terminal for Codex.
+/// the Antigravity levitating core for Google Antigravity, the Prompt terminal for Codex.
 enum IslandPetSpecies: Hashable {
-    case clawd, codex, grok
+    case clawd, codex, grok, antigravity
     init(provider: String) {
         switch provider {
         case "Claude Code": self = .clawd
         case "Grok CLI": self = .grok
+        case "Antigravity": self = .antigravity
         default: self = .codex
+        }
+    }
+}
+
+/// One frame of the Antigravity pet: a levitating celestial core with orbital winglets, a dark visor,
+/// and anti-gravity hover thrusters underneath.
+struct IslandAntigravityFrame: Equatable {
+    enum Eyes: Equatable { case open, look(CGFloat), wide, closed, squint, happy, cross }
+    var eyes: Eyes
+    var hover: CGFloat = 0
+    var squashed = false
+    var dots = 0
+    var bang = false
+    var speech: Bool?
+    var wrench: CGFloat?
+    var sparkle = false
+}
+
+struct IslandAntigravityClip {
+    var frames: [IslandAntigravityFrame]
+    var fps: Double
+    var loops: Bool
+    var duration: CFTimeInterval { Double(frames.count) / fps }
+}
+
+enum IslandAntigravityClips {
+    static func clip(_ state: IslandClawdBadgeState) -> IslandAntigravityClip {
+        switch state {
+        case .idle:
+            return .init(frames: [.init(eyes: .closed, hover: 0)], fps: 1, loops: true)
+        case .start:
+            return .init(frames: [.init(eyes: .closed, hover: 0), .init(eyes: .wide, hover: -0.8, sparkle: true)], fps: 3, loops: false)
+        case .think:
+            return .init(frames: [
+                .init(eyes: .look(-0.3), hover: -0.4),
+                .init(eyes: .look(-0.3), hover: -0.8, dots: 1),
+                .init(eyes: .look(0.4), hover: -0.9, dots: 2),
+                .init(eyes: .look(0.4), hover: -0.5, dots: 3),
+                .init(eyes: .closed, hover: -0.3, dots: 3),
+                .init(eyes: .open, hover: -0.7, sparkle: true)
+            ], fps: 4, loops: true)
+        case .tool:
+            return .init(frames: [
+                .init(eyes: .squint, hover: -0.5, wrench: 0),
+                .init(eyes: .squint, hover: -0.7, wrench: -0.8),
+                .init(eyes: .squint, hover: -0.5, wrench: 0),
+                .init(eyes: .squint, hover: -0.7, wrench: -0.8)
+            ], fps: 8, loops: true)
+        case .approve:
+            return .init(frames: [
+                .init(eyes: .wide, hover: -1.0, bang: true),
+                .init(eyes: .wide, hover: -0.4)
+            ], fps: 4, loops: true)
+        case .reply:
+            return .init(frames: [
+                .init(eyes: .wide, hover: -0.7, speech: true),
+                .init(eyes: .look(-0.3), hover: -0.4, speech: false)
+            ], fps: 2, loops: true)
+        case .done:
+            return .init(frames: [
+                .init(eyes: .happy, hover: -0.4, sparkle: true),
+                .init(eyes: .happy, hover: -1.1, sparkle: true)
+            ], fps: 4, loops: true)
+        case .fail:
+            return .init(frames: [.init(eyes: .cross, hover: 0.4, squashed: true)], fps: 1, loops: true)
+        }
+    }
+
+    static func still(_ state: IslandClawdBadgeState) -> IslandAntigravityFrame {
+        switch state {
+        case .idle: return .init(eyes: .closed, hover: 0)
+        case .start, .think: return .init(eyes: .open, hover: -0.5)
+        case .tool: return .init(eyes: .squint, hover: -0.5)
+        case .approve, .reply: return .init(eyes: .wide, hover: -0.6)
+        case .done: return .init(eyes: .happy, hover: -0.6, sparkle: true)
+        case .fail: return .init(eyes: .cross, hover: 0.3, squashed: true)
         }
     }
 }
@@ -303,6 +380,10 @@ enum IslandClawdBadgeRenderer {
             made = IslandGrokClips.clip(state).frames.compactMap { frame in
                 render(pixel: pixel, scale: scale) { drawGrok(frame, pixel: pixel, in: $0) }
             }
+        case .antigravity:
+            made = IslandAntigravityClips.clip(state).frames.compactMap { frame in
+                render(pixel: pixel, scale: scale) { drawAntigravity(frame, pixel: pixel, in: $0) }
+            }
         }
         cache[key] = made
         return made
@@ -321,6 +402,9 @@ enum IslandClawdBadgeRenderer {
         case .grok:
             let frame = IslandGrokClips.still(state)
             made = render(pixel: pixel, scale: scale) { drawGrok(frame, pixel: pixel, in: $0) }
+        case .antigravity:
+            let frame = IslandAntigravityClips.still(state)
+            made = render(pixel: pixel, scale: scale) { drawAntigravity(frame, pixel: pixel, in: $0) }
         }
         stillCache[key] = made
         return made
@@ -332,6 +416,7 @@ enum IslandClawdBadgeRenderer {
         case .clawd: let clip = IslandClawdBadgeClips.clip(state); return (clip.duration, clip.loops)
         case .codex: let clip = IslandCodexClips.clip(state); return (clip.duration, clip.loops)
         case .grok: let clip = IslandGrokClips.clip(state); return (clip.duration, clip.loops)
+        case .antigravity: let clip = IslandAntigravityClips.clip(state); return (clip.duration, clip.loops)
         }
     }
 
@@ -452,6 +537,88 @@ enum IslandClawdBadgeRenderer {
         if let cursor = frame.speech {
             fill(2.4, -10, 3.4, 1.9, 0xF2F2F2); fill(2.8, -8.1, 0.8, 0.6, 0xF2F2F2)
             if cursor { fill(3.2, -9.7, 0.35, 1.3, 0x141418) }
+        }
+    }
+
+    /// The Antigravity pet: a levitating celestial core with an anti-gravity hover ring underneath,
+    /// flanking orbital winglets, a midnight visor, and a twinkling four-point star crest.
+    static func drawAntigravity(_ frame: IslandAntigravityFrame, pixel px: CGFloat, in context: CGContext) {
+        context.saveGState(); defer { context.restoreGState() }
+        context.setShouldAntialias(false)
+        let dy = frame.hover + (frame.squashed ? 0.8 : 0)
+        func fill(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ hex: UInt32, fixed: Bool = false) {
+            let oy = fixed ? y : (y + dy)
+            IslandClawdSprite.fillPixelBlock(CGRect(x: x * px, y: oy * px, width: w * px, height: h * px),
+                                             color: srgb(hex), in: context)
+        }
+        let failed = frame.eyes == .cross
+        let shell: UInt32 = failed ? 0x8F98AD : 0x7E9EFF
+        let rim: UInt32 = failed ? 0x6B7387 : 0x4E6EE3
+        let crest: UInt32 = failed ? 0xB8C0D2 : 0xD2E3FC
+        let visor: UInt32 = 0x10172A
+        let glow: UInt32 = failed ? 0xFF6B63 : (frame.eyes == .happy ? 0x6BE69B : 0x8BE0FF)
+
+        // Anti-gravity hover pad stays anchored near the baseline while the body levitates above it.
+        if !failed {
+            let padWidth: CGFloat = frame.hover < -0.6 ? 4.4 : 5.6
+            fill(-padWidth / 2, -0.7, padWidth, 0.65, 0x5B8DEF, fixed: true)
+            fill(-1.2, -0.7, 2.4, 0.45, 0xA8C7FA, fixed: true)
+        }
+
+        // Main levitating capsule + orbital winglets.
+        fill(-5.6, -5.4, 1.1, 1.8, rim)
+        fill(4.5, -5.4, 1.1, 1.8, rim)
+        fill(-3.0, -7.8, 6.0, 1.0, shell)
+        fill(-4.2, -6.8, 8.4, 4.2, shell)
+        fill(-3.0, -2.6, 6.0, 0.9, rim)
+        fill(-1.6, -7.4, 2.2, 0.5, crest)
+
+        // Visor window.
+        fill(-3.3, -6.1, 6.6, 2.9, visor)
+
+        let ey: CGFloat = -5.2
+        for x in [CGFloat(-2.0), 1.0] {
+            switch frame.eyes {
+            case .open:
+                fill(x, ey, 1.0, 1.6, glow)
+            case .look(let offset):
+                fill(x + offset, ey, 1.0, 1.5, glow)
+            case .wide:
+                fill(x - 0.1, ey - 0.2, 1.2, 1.9, 0xFFD166)
+            case .closed:
+                fill(x - 0.1, ey + 0.8, 1.2, 0.45, 0x5C78B8)
+            case .squint:
+                fill(x - 0.1, ey + 0.55, 1.2, 0.55, glow)
+            case .happy:
+                fill(x - 0.3, ey + 0.8, 0.5, 0.5, glow)
+                fill(x + 0.1, ey + 0.3, 0.6, 0.5, glow)
+                fill(x + 0.6, ey + 0.8, 0.5, 0.5, glow)
+            case .cross:
+                for (ox, oy) in [(-0.2, 0.1), (0.6, 0.1), (0.2, 0.6), (-0.2, 1.1), (0.6, 1.1)] as [(CGFloat, CGFloat)] {
+                    fill(x + ox, ey + oy, 0.5, 0.5, glow)
+                }
+            }
+        }
+
+        // Four-point Gemini star sparkle above the crest.
+        if frame.sparkle {
+            fill(-0.35, -9.8, 0.7, 1.7, 0xA8C7FA)
+            fill(-0.85, -9.3, 1.7, 0.7, 0xA8C7FA)
+            fill(-0.25, -9.2, 0.5, 0.5, 0xFFFFFF)
+        }
+        for dot in 0..<frame.dots { fill(2.6 + CGFloat(dot) * 1.2, -9.6, 0.8, 0.8, 0xB8CEFA, fixed: true) }
+        if let lift = frame.wrench {
+            fill(5.2, -7.6 + lift, 0.8, 2.6, 0x9AA4AE, fixed: true)
+            fill(4.8, -8.4 + lift, 1.6, 0.9, 0x9AA4AE, fixed: true)
+        }
+        if frame.bang {
+            fill(4.8, -10, 0.8, 1.3, 0xFFB340, fixed: true)
+            fill(4.8, -8.4, 0.8, 0.6, 0xFFB340, fixed: true)
+        }
+        if let cursor = frame.speech {
+            fill(2.4, -10, 3.4, 1.9, 0xF2F2F2, fixed: true)
+            fill(2.8, -8.1, 0.8, 0.6, 0xF2F2F2, fixed: true)
+            if cursor { fill(3.2, -9.7, 0.35, 1.3, visor, fixed: true) }
         }
     }
 

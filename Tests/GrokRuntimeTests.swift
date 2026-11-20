@@ -114,6 +114,70 @@ struct GrokRuntimeTests {
         let setupEnd = Date().addingTimeInterval(5)
         while setupRace.automaticConfiguring && Date() < setupEnd { try await Task.sleep(nanoseconds: 20_000_000) }
         expect(!setupRace.enabled && setupRace.automaticReady, "completed setup cannot override a later explicit disable")
+        defaults.set(true, forKey: "grok.enabled")
+        let diagnosticHome = directory.appendingPathComponent("diagnostic-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: diagnosticHome, withIntermediateDirectories: true)
+        try Data("[cli]\nuse_leader=true\n".utf8).write(to: diagnosticHome.appendingPathComponent("config.toml"))
+        let diagnosticID = UUID().uuidString
+        try JSONSerialization.data(withJSONObject: [["session_id": diagnosticID, "pid_start": (now.timeIntervalSince1970 - 3600) * 1_000_000]])
+            .write(to: diagnosticHome.appendingPathComponent("active_sessions.json"))
+        let diagnostic = GrokRuntime(home: diagnosticHome, defaults: defaults)
+        diagnostic.consume(.init(sessions: [], usage: .init(days: [], complete: true, sessionCount: 0, updatedAt: now), liveIDs: [], registeredIDs: [diagnosticID]))
+        expect(diagnostic.questionStatus.contains("/new") && diagnostic.questionStatus.contains("退出 Grok CLI"), "old standalone process is explicitly distinguished from a new session")
+        diagnostic.consumeShared(.init(revision: 100, connected: true, status: "共享问答已连接"))
+        expect(diagnostic.questionStatus == "共享问答已连接", "real connection takes precedence over old registry entries")
+        diagnostic.configure(enabled: false)
+        expect(diagnostic.questionStatus == "Grok 监控已关闭", "disabled monitor never claims a live question connection")
+
+        // OneNative gives each terminal launch its own `leader-*.sock`; Pulse follows every one of them.
+        let leaders = URL(fileURLWithPath: "/tmp/gpl-" + String(UUID().uuidString.prefix(8)))
+        try FileManager.default.createDirectory(at: leaders, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: leaders) }
+        func bindSocket(_ name: String) -> Int32 {
+            let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+            var address = sockaddr_un(); address.sun_family = sa_family_t(AF_UNIX)
+            let path = Array(leaders.appendingPathComponent(name).path.utf8CString)
+            withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: path.map { UInt8(bitPattern: $0) }) }
+            _ = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } }
+            return fd
+        }
+        let bound = ["leader.sock", "leader-onenative-AAAA-1.sock", "leader-onenative-BBBB-2.sock", "other.sock"].map(bindSocket)
+        defer { bound.forEach { close($0) } }
+        try Data("not a socket".utf8).write(to: leaders.appendingPathComponent("leader-fake.sock"))
+        try FileManager.default.createSymbolicLink(at: leaders.appendingPathComponent("leader-link.sock"),
+                                                   withDestinationURL: leaders.appendingPathComponent("leader.sock"))
+        expect(GrokLauncher.sharedSockets(home: leaders).map(\.lastPathComponent)
+               == ["leader-onenative-AAAA-1.sock", "leader-onenative-BBBB-2.sock", "leader.sock"],
+               "only same-user leader sockets by Grok's naming are followed; files, links and other names are not")
+        defaults.set(true, forKey: "grok.enabled")
+        let multi = GrokRuntime(home: leaders, defaults: defaults)
+        let first = UUID().uuidString, second = UUID().uuidString
+        var turnA = GrokTurnState(promptID: "turn-a", phase: .tool, startedAt: now, updatedAt: now); turnA.steps = []
+        var turnB = GrokTurnState(promptID: "turn-b", phase: .tool, startedAt: now, updatedAt: now); turnB.steps = []
+        multi.consume(.init(sessions: [.init(id: first, cwd: "/a", title: "A", model: "grok-test", turn: turnA, caughtUp: true, totalTokens: 0),
+                                       .init(id: second, cwd: "/b", title: "B", model: "grok-test", turn: turnB, caughtUp: true, totalTokens: 0)],
+            usage: .init(days: [], complete: true, sessionCount: 2, updatedAt: now), liveIDs: [first, second], registeredIDs: [first, second]))
+        func ask(_ session: String, _ turn: String, _ id: Int) -> GrokQuestionRequest {
+            GrokQuestionRequest.decode(["id": id, "method": "_x.ai/ask_user_question", "params": [
+                "sessionId": session, "toolCallId": "ask-\(id)", "questions": [["question": "继续？", "options": [["label": "是"], ["label": "否"]]]]]],
+                epoch: UUID(), turnID: turn)!
+        }
+        let socketA = leaders.appendingPathComponent("leader-onenative-AAAA-1.sock").path
+        let socketB = leaders.appendingPathComponent("leader-onenative-BBBB-2.sock").path
+        let askA = ask(first, "turn-a", 1), askB = ask(second, "turn-b", 2)
+        multi.consumeShared(.init(revision: 1, connected: true, requests: [askA], status: "共享问答已连接"), from: socketA)
+        multi.consumeShared(.init(revision: 1, connected: true, requests: [askB], status: "共享问答已连接"), from: socketB)
+        expect(Set(multi.questions.map(\.id)) == [askA.id, askB.id] && multi.rows.filter { $0.phase == .waitingApproval }.count == 2,
+               "questions from two terminal leaders are both shown")
+        let routed = await multi.answer(askB, selections: ["继续？": ["是"]], texts: [:])
+        expect(routed != "问题已失效，请在 Grok 原终端查看", "an answer is routed to the leader that asked")
+        try FileManager.default.removeItem(at: URL(fileURLWithPath: socketA))
+        multi.consume(.init(sessions: [.init(id: second, cwd: "/b", title: "B", model: "grok-test", turn: turnB, caughtUp: true, totalTokens: 0)],
+            usage: .init(days: [], complete: true, sessionCount: 1, updatedAt: now), liveIDs: [second], registeredIDs: [second]))
+        expect(multi.questions.map(\.id) == [askB.id], "a vanished leader socket drops its questions")
+        multi.consumeShared(.init(revision: 9, connected: true, requests: [askA]), from: socketA)
+        expect(multi.questions.map(\.id) == [askB.id], "a removed leader's late callback cannot bring its question back")
+        multi.configure(enabled: false)
 
         if CommandLine.arguments.contains("--render-interactions") {
             _ = NSApplication.shared

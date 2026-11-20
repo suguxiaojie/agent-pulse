@@ -31,12 +31,14 @@ struct IslandDashboardCost {
         official = account != nil
         if let account {
             // AccountUsageSnapshot preserves UTC day labels on the local calendar.
-            let utc = DateFormatter(); utc.locale = Locale(identifier: "en_US_POSIX"); utc.dateFormat = "yyyy-MM-dd"; utc.timeZone = TimeZone(secondsFromGMT: 0)
-            let localDate = DateFormatter(); localDate.locale = utc.locale; localDate.dateFormat = "yyyy-MM-dd"
-            let today = localDate.date(from: utc.string(from: now)) ?? Calendar.current.startOfDay(for: now)
+            var utcCalendar = Calendar(identifier: .gregorian)
+            utcCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+            let localCalendar = Calendar.current
+            let utcComponents = utcCalendar.dateComponents([.year, .month, .day], from: now)
+            let today = localCalendar.date(from: utcComponents) ?? localCalendar.startOfDay(for: now)
             let counts = Dictionary((account.days ?? []).map { ($0.date, $0.tokens) }, uniquingKeysWith: max)
             days = (0..<30).compactMap { index in
-                guard let date = Calendar.current.date(byAdding: .day, value: index - 29, to: today) else { return nil }
+                guard let date = localCalendar.date(byAdding: .day, value: index - 29, to: today) else { return nil }
                 let tokens = counts[date]
                 return Day(date: date, tokens: tokens, cost: tokens.map { Double($0) / 1_000_000 * Self.usdPerMillionTokens })
             }

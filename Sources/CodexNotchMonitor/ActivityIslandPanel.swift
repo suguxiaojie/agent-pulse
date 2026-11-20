@@ -256,7 +256,7 @@ final class ActivityIslandPanelPresenter {
         panel.ignoresMouseEvents = true; panel.acceptsMouseMovedEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.animationBehavior = .none; panel.contentView = surface
-        panel.title = "Codex Pulse · 活动会话"
+        panel.title = "Agent Pulse · 活动会话"
         model.onApprovalMeasurementChange = { [weak self] in self?.onNeedsRefresh?() }
         if let local = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDown, .rightMouseDown],
             handler: { [weak self] event in

@@ -1,9 +1,18 @@
 import AppKit
 import SwiftUI
 
+enum GlanceKeyboardNavigation: Equatable {
+    case previous
+    case next
+    case index(Int)
+}
+
 extension Notification.Name {
     static let glancePresentationDidChange = Notification.Name(
         "CodexNotchMonitor.glancePresentationDidChange"
+    )
+    static let glanceKeyboardNavigate = Notification.Name(
+        "CodexNotchMonitor.glanceKeyboardNavigate"
     )
 }
 
@@ -112,6 +121,7 @@ final class GlanceWindowController: NSObject {
     private var hostingView: NSHostingView<GlanceView>!
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
+    private var localKeyMonitor: Any?
     private var screenObserver: NSObjectProtocol?
     private var preferencesObserver: NSObjectProtocol?
     private var centerSectionObserver: NSObjectProtocol?
@@ -354,6 +364,28 @@ final class GlanceWindowController: NSObject {
                       !self.panel.frame.contains(location)
                 else { return }
                 self.hide()
+            }
+            return event
+        }
+        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            guard let self, self.panel.isVisible, self.panel.isKeyWindow, NSApp.modalWindow == nil else {
+                return event
+            }
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if flags == .command, let chars = event.charactersIgnoringModifiers, let digit = Int(chars), (1...4).contains(digit) {
+                NotificationCenter.default.post(name: .glanceKeyboardNavigate, object: GlanceKeyboardNavigation.index(digit - 1))
+                return nil
+            }
+            let disallowed: NSEvent.ModifierFlags = [.command, .option, .control]
+            if flags.intersection(disallowed).isEmpty {
+                if event.keyCode == 123 {
+                    NotificationCenter.default.post(name: .glanceKeyboardNavigate, object: GlanceKeyboardNavigation.previous)
+                    return nil
+                }
+                if event.keyCode == 124 {
+                    NotificationCenter.default.post(name: .glanceKeyboardNavigate, object: GlanceKeyboardNavigation.next)
+                    return nil
+                }
             }
             return event
         }

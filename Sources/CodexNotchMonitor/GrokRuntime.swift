@@ -20,9 +20,14 @@ final class GrokRuntime: ObservableObject {
     let home: URL
     private let defaults: UserDefaults
     private let reader: GrokSessionReader
-    private let shared: GrokSharedClient
+    /// One client per leader socket; questions are merged and each answer returns to its own leader.
+    private var sharedClients: [String: GrokSharedClient] = [:]
+    private var sharedSnapshots: [String: GrokSharedClient.Snapshot] = [:]
+    private var sharedOwners: [String: String] = [:]
+    private var sessionBindings: [String: String] = [:]
     private var lastScan: GrokSessionScan?
-    private var sharedRevision: UInt64 = 0
+    private var sharedConnected = false
+    private var sharedStatus = "等待下次正常启动 Grok，自动接入新请求"
     var sharedSocketURL: URL { GrokLauncher.sharedSocket(home: home) }
     private var timer: AnyCancellable?
     private var billingTask: Task<Void, Never>?
@@ -38,19 +43,13 @@ final class GrokRuntime: ObservableObject {
         let root = home ?? ProcessInfo.processInfo.environment["GROK_HOME"].map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".grok")
         self.home = root; reader = GrokSessionReader(home: root)
-        shared = GrokSharedClient(socketURL: GrokLauncher.sharedSocket(home: root))
         enabled = defaults.bool(forKey: "grok.enabled")
-        shared.onSnapshot = { [weak self] snapshot in
-            Task { @MainActor [weak self] in
-                self?.consumeShared(snapshot)
-            }
-        }
         refreshAutomaticStatus()
     }
     func start() {
         guard enabled, timer == nil else { return }
         refreshAutomaticStatus()
-        shared.start()
+        syncSharedClients()
         refresh()
         timer = Timer.publish(every: 2, on: .main, in: .common).autoconnect().sink { [weak self] _ in
             guard let self else { return }
@@ -67,22 +66,71 @@ final class GrokRuntime: ObservableObject {
             timer = nil; client?.cancel(); billingTask?.cancel(); billingTask = nil
             scanTask?.cancel(); scanTask = nil; refreshing = false
             quota = nil; usage = nil; rows = []; receipts = [:]; observedTurns = []
-            shared.stop(); questions = []; submittedQuestions = []; lastScan = nil
+            stopSharedClients(); questions = []; submittedQuestions = []; lastScan = nil
+            sharedConnected = false; sharedStatus = "Grok 监控已关闭"; questionStatus = sharedStatus
             quotaStatus = "接入已关闭"; quotaFailed = false; onRowsChanged?()
         }
     }
     func refresh() { refreshQuota(); refreshActivity() }
-    func consumeShared(_ snapshot: GrokSharedClient.Snapshot) {
-        guard enabled, snapshot.revision > sharedRevision else { return }
-        sharedRevision = snapshot.revision
-        questions = snapshot.requests; submittedQuestions = snapshot.submitted; questionStatus = snapshot.status
+    /// `socket` is nil only for the default leader; a client that was already removed cannot publish again.
+    func consumeShared(_ snapshot: GrokSharedClient.Snapshot, from socket: String? = nil) {
+        let path = socket ?? sharedSocketURL.path
+        guard enabled, socket == nil || sharedClients[path] != nil,
+              snapshot.revision > (sharedSnapshots[path]?.revision ?? 0) else { return }
+        sharedSnapshots[path] = snapshot
+        mergeShared()
         if let scan = lastScan { projectRows(scan) }
+    }
+    private func mergeShared() {
+        var requests: [GrokQuestionRequest] = [], owners: [String: String] = [:], submitted = Set<String>()
+        for (path, snapshot) in sharedSnapshots.sorted(by: { $0.key < $1.key }) {
+            for request in snapshot.requests where owners[request.id] == nil { owners[request.id] = path; requests.append(request) }
+            submitted.formUnion(snapshot.submitted)
+        }
+        questions = requests.sorted { $0.id < $1.id }; submittedQuestions = submitted; sharedOwners = owners
+        let connected = sharedSnapshots.sorted { $0.key < $1.key }.map(\.value).filter(\.connected)
+        sharedConnected = !connected.isEmpty
+        sharedStatus = connected.first?.status ?? sharedSnapshots[sharedSocketURL.path]?.status ?? "等待下次正常启动 Grok，自动接入新请求"
+        updateQuestionStatus()
+    }
+    /// Follows the leader sockets on disk: new ones get a client, vanished ones are dropped with their questions.
+    private func syncSharedClients() {
+        let wanted = Set(GrokLauncher.sharedSockets(home: home).map(\.path))
+        var removed = false
+        for (path, client) in sharedClients where !wanted.contains(path) {
+            client.stop(); sharedClients[path] = nil; sharedSnapshots[path] = nil; removed = true
+        }
+        for path in wanted.sorted() where sharedClients[path] == nil {
+            let client = GrokSharedClient(socketURL: URL(fileURLWithPath: path))
+            client.onSnapshot = { [weak self] snapshot in
+                Task { @MainActor [weak self] in self?.consumeShared(snapshot, from: path) }
+            }
+            sharedClients[path] = client
+            client.start(); client.updateSessions(sessionBindings)
+        }
+        if removed { mergeShared() }
+    }
+    private func stopSharedClients() {
+        sharedClients.values.forEach { $0.stop() }
+        sharedClients = [:]; sharedSnapshots = [:]; sharedOwners = [:]
     }
     func refreshAutomaticStatus() {
         do {
             automaticReady = try GrokLauncher.isEnabled(home: home)
             automaticStatus = automaticReady ? "自动接入已就绪，之后照常运行 grok" : "开启后自动识别项目，无需选择文件夹"
         } catch { automaticReady = false; automaticStatus = "无法安全识别 Grok 启动配置，已保留原文件" }
+        updateQuestionStatus()
+    }
+    private func updateQuestionStatus() {
+        let status: String
+        if automaticReady, !sharedConnected, GrokLauncher.sharedSockets(home: home).isEmpty,
+           let scan = lastScan, !scan.registeredIDs.isEmpty,
+           let date = try? home.appendingPathComponent("config.toml").resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+           let registry = GrokJSON.read(home.appendingPathComponent("active_sessions.json"), maximum: 262_144),
+           GrokLauncher.hasPreConfigurationProcess(registry: registry, verifiedSessions: scan.registeredIDs, configuredAt: date) {
+            status = "检测到启用前的独立 Grok 进程。/new 不会重载启动设置；完成当前任务后退出 Grok CLI，再正常运行 grok。"
+        } else { status = sharedStatus }
+        if questionStatus != status { questionStatus = status }
     }
     func enableAutomatic() {
         guard !automaticConfiguring else { return }
@@ -104,7 +152,7 @@ final class GrokRuntime: ObservableObject {
         }
     }
     func stop() {
-        shared.stop()
+        stopSharedClients()
         generation += 1; timer = nil; client?.cancel(); billingTask?.cancel(); scanTask?.cancel()
         billingTask = nil; scanTask = nil; refreshing = false
     }
@@ -147,12 +195,17 @@ final class GrokRuntime: ObservableObject {
     func consume(_ scan: GrokSessionScan, now: Date = Date()) {
         guard enabled else { return }
         lastScan = scan
-        shared.updateSessions(Dictionary(scan.sessions.filter { scan.registeredIDs.contains($0.id) }.map { ($0.id, $0.cwd) }, uniquingKeysWith: { _, last in last }))
+        updateQuestionStatus()
+        sessionBindings = Dictionary(scan.sessions.filter { scan.registeredIDs.contains($0.id) }.map { ($0.id, $0.cwd) }, uniquingKeysWith: { _, last in last })
+        syncSharedClients()
+        sharedClients.values.forEach { $0.updateSessions(sessionBindings) }
         projectRows(scan, now: now)
     }
     func answer(_ request: GrokQuestionRequest, action: String = "answers", selections: [String: [String]], texts: [String: String]) async -> String {
-        guard enabled, questions.contains(request) else { return "问题已失效，请在 Grok 原终端查看" }
-        return await shared.submit(request, action: action, selections: selections, texts: texts)
+        guard enabled, questions.contains(request), let path = sharedOwners[request.id], let client = sharedClients[path] else {
+            return "问题已失效，请在 Grok 原终端查看"
+        }
+        return await client.submit(request, action: action, selections: selections, texts: texts)
     }
     private func projectRows(_ scan: GrokSessionScan, now: Date = Date()) {
         if usage?.days != scan.usage.days || usage?.complete != scan.usage.complete || usage?.sessionCount != scan.usage.sessionCount {
@@ -208,5 +261,5 @@ final class GrokRuntime: ObservableObject {
         if observedTurns.count > 1024 { observedTurns = Set(next.map { $0.id + ":" + ($0.turnID ?? "") }) }
         if rows != next { rows = next; onRowsChanged?() }
     }
-    deinit { shared.stop(); timer?.cancel(); client?.cancel(); billingTask?.cancel(); scanTask?.cancel() }
+    deinit { sharedClients.values.forEach { $0.stop() }; timer?.cancel(); client?.cancel(); billingTask?.cancel(); scanTask?.cancel() }
 }

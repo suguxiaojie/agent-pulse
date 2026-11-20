@@ -17,6 +17,10 @@ import Darwin
     static func main() async throws {
         let directory = URL(fileURLWithPath: CommandLine.arguments[1]); try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let sid = UUID().uuidString
+        let launchRegistry = try JSONSerialization.data(withJSONObject: [["session_id": sid, "pid_start": 100_000_000]])
+        expect(GrokLauncher.hasPreConfigurationProcess(registry: launchRegistry, verifiedSessions: [sid], configuredAt: Date(timeIntervalSince1970: 200)), "new session in an old CLI process still requires one relaunch")
+        expect(!GrokLauncher.hasPreConfigurationProcess(registry: launchRegistry, verifiedSessions: [], configuredAt: Date(timeIntervalSince1970: 200)), "dead or unverified registry is not a relaunch diagnostic")
+        expect(!GrokLauncher.hasPreConfigurationProcess(registry: launchRegistry, verifiedSessions: [sid], configuredAt: Date(timeIntervalSince1970: 50)), "process launched after configuration is not diagnosed as old")
         let nativeInfo: [String: Any] = ["result": ["result": ["sessionId": sid, "cwd": "/fixture", "turns": 1]]]
         expect(GrokSharedClient.confirmsSession(nativeInfo, id: sid, cwd: "/fixture"), "official ExtMethodResult wrapper and flattened SessionInfoResponse")
         expect(!GrokSharedClient.confirmsSession(nativeInfo, id: sid, cwd: "/other"), "mismatched cwd is not subscribed")
@@ -28,6 +32,19 @@ import Darwin
         let params: [String: Any] = ["sessionId": sid, "toolCallId": "tool", "mode": "default", "questions": [
             ["question": "选择？", "multiSelect": true, "options": [["label": "A, B", "description": "含逗号"], ["label": "C", "description": "第二项"]]]]]
         let question: [String: Any] = ["jsonrpc": "2.0", "id": "native-1", "method": "_x.ai/ask_user_question", "params": params]
+        // Official Question.multi_select is Option<bool> and serializes None as null.
+        for (value, expected) in [(NSNull() as Any, false), (false as Any, false), (true as Any, true)] {
+            var native = params
+            native["questions"] = [["question": "原生单选？", "multiSelect": value, "options": [["label": "红色"], ["label": "蓝色"]]]]
+            let wire: [String: Any] = ["id": 101, "method": "_x.ai/ask_user_question", "params": native]
+            let decoded = GrokQuestionRequest.decode(wire, epoch: UUID(), turnID: "turn")
+            expect(decoded?.questions.first?.multiple == expected, "native null optional multiSelect defaults to single select; booleans retain their meaning")
+        }
+        for value in [1 as Any, "true" as Any, [] as Any] {
+            var native = params
+            native["questions"] = [["question": "无效模式？", "multiSelect": value, "options": [["label": "红色"]]]]
+            expect(GrokQuestionRequest.decode(["id": 101, "method": "_x.ai/ask_user_question", "params": native], epoch: UUID(), turnID: "turn") == nil, "invalid nonboolean selection mode rejected")
+        }
         var state = GrokQuestionState(); state.allowedSessions = [sid]
         state.consume(question); expect(state.requests.isEmpty, "question without current tool/turn evidence is not actionable")
         state.consume(tool()); state.consume(question)
@@ -52,6 +69,17 @@ import Darwin
         state.consume(["method": "_x.ai/session_notification", "params": ["sessionId": sid, "update": ["sessionUpdate": "interaction_resolved", "tool_call_id": "tool"]]])
         expect(state.requests.isEmpty && state.submit(fresh, selections: ["选择？": ["C"]], texts: [:]) == nil, "terminal first answer revokes island control")
         state.consume(question); expect(state.requests.isEmpty, "resolved duplicate not replayed")
+        // Live order seen on grok 1.0.70: pending, resolved, pending again, then the real request for the same tool call.
+        func notice(_ kind: String) -> [String: Any] {
+            ["method": "_x.ai/session_notification", "params": ["sessionId": sid, "update": ["sessionUpdate": kind, "tool_call_id": "tool"]]]
+        }
+        state.reset(); state.allowedSessions = [sid]; state.consume(tool())
+        state.consume(notice("pending_interaction")); state.consume(notice("interaction_resolved")); state.consume(notice("pending_interaction"))
+        state.consume(question)
+        expect(state.requests.count == 1, "re-registered pending interaction accepts the real request after an earlier resolve")
+        state.consume(notice("interaction_resolved"))
+        expect(state.requests.isEmpty, "the later resolve still revokes the island control")
+        state.consume(question); expect(state.requests.isEmpty, "without a new pending the resolved request stays rejected")
         state.reset(); state.allowedSessions = [sid]; state.consume(tool()); state.consume(question); state.consume(tool("next", turn: "new-turn"))
         state.consume(["method": "session/update", "params": ["sessionId": sid, "update": ["sessionUpdate": "turn_completed", "prompt_id": "turn"]]])
         state.consume(tool()); expect(state.requests.isEmpty, "retired turn cannot resurrect after new turn")
@@ -148,6 +176,9 @@ import Darwin
         tool('q');acp({'jsonrpc':'2.0','id':101,'method':'_x.ai/ask_user_question','params':{'sessionId':sid,'toolCallId':'q','questions':[{'question':'Q?','options':[{'label':'A, B'},{'label':'C'}],'multiSelect':True}]}})
         answer=json.loads(read()['payload']);assert answer['id']==101 and answer['result']['answers']['Q?']==['A, B','C']
         acp({'method':'_x.ai/session_notification','params':{'sessionId':sid,'update':{'sessionUpdate':'interaction_resolved','tool_call_id':'q'}}})
+        tool('native-null');acp({'jsonrpc':'2.0','id':104,'method':'_x.ai/ask_user_question','params':{'sessionId':sid,'toolCallId':'native-null','questions':[{'question':'Native single?','options':[{'label':'Red'},{'label':'Blue'}],'multiSelect':None}]}})
+        single=json.loads(read()['payload']);assert single['id']==104 and single['result']['answers']['Native single?']==['Blue']
+        acp({'method':'_x.ai/session_notification','params':{'sessionId':sid,'update':{'sessionUpdate':'interaction_resolved','tool_call_id':'native-null'}}})
         tool('p');acp({'jsonrpc':'2.0','id':102,'method':'session/request_permission','params':{'sessionId':sid,'toolCall':{'toolCallId':'p','title':'Echo','rawInput':{'command':'echo fixture'}},'options':[{'optionId':'exact-once','kind':'allow_once'}]}})
         approval=json.loads(read()['payload']);assert approval['id']==102 and approval['result']['outcome']['optionId']=='exact-once'
         tool('pending');acp({'jsonrpc':'2.0','id':103,'method':'_x.ai/ask_user_question','params':{'sessionId':sid,'toolCallId':'pending','questions':[{'question':'Leave pending?','options':[]}]}})
@@ -167,6 +198,10 @@ import Darwin
         try await wait { box.get().requests.first?.toolCallID == "q" }
         let nativeQuestion = box.get().requests.first!
         _ = await client.submit(nativeQuestion, selections: ["Q?": ["A, B", "C"]], texts: [:])
+        try await wait { box.get().requests.contains { $0.toolCallID == "native-null" } }
+        let single = box.get().requests.first { $0.toolCallID == "native-null" }!
+        expect(!single.questions[0].multiple, "native framed null mode is a single-selection question")
+        _ = await client.submit(single, selections: ["Native single?": ["Blue"]], texts: [:])
         try await wait { box.get().requests.contains { $0.toolCallID == "p" } }
         let nativePermission = box.get().requests.first { $0.toolCallID == "p" }!
         _ = await client.submit(nativePermission, action: "once", selections: [:], texts: [:])

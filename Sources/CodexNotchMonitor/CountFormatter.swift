@@ -17,6 +17,29 @@ enum CountStyle: String, CaseIterable {
 }
 
 enum CountFormatter {
+    private static let formatterLock = NSLock()
+    nonisolated(unsafe) private static var cachedFormatters: [Int: NumberFormatter] = [:]
+
+    private static func decimalString(_ value: Decimal, style: CountStyle, digits: Int) -> String {
+        let key = (style == .chinese ? 10 : 0) + digits
+        formatterLock.lock()
+        defer { formatterLock.unlock() }
+        let formatter: NumberFormatter
+        if let existing = cachedFormatters[key] {
+            formatter = existing
+        } else {
+            let created = NumberFormatter()
+            created.locale = Locale(identifier: "en_US_POSIX")
+            created.numberStyle = .decimal
+            created.usesGroupingSeparator = style == .chinese
+            created.minimumFractionDigits = 0
+            created.maximumFractionDigits = digits
+            cachedFormatters[key] = created
+            formatter = created
+        }
+        return formatter.string(from: NSDecimalNumber(decimal: value)) ?? "—"
+    }
+
     static func string(_ value: Int64, style: CountStyle) -> String {
         guard value >= 0 else { return "—" }
         return format(Decimal(value), style: style)
@@ -49,13 +72,7 @@ enum CountFormatter {
                 index += 1
                 continue
             }
-            let formatter = NumberFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.numberStyle = .decimal
-            formatter.usesGroupingSeparator = style == .chinese
-            formatter.minimumFractionDigits = 0
-            formatter.maximumFractionDigits = digits
-            return (formatter.string(from: NSDecimalNumber(decimal: rounded)) ?? "—") + suffixes[index]
+            return decimalString(rounded, style: style, digits: digits) + suffixes[index]
         }
     }
 }

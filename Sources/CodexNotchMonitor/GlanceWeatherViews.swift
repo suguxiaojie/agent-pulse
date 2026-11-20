@@ -47,6 +47,7 @@ struct GlanceWeatherStrip: View {
     var loadingText = "用量明细尚未就绪"
     var tokenSourceLabel = "当前账号本地用量"
     var unpricedDates: Set<Date> = []
+    var unpricedHelpText: String? = nil
     @Environment(\.colorScheme) private var colorScheme
     @State private var hovered: Date?
     @State private var hoverClearWorkItem: DispatchWorkItem?
@@ -69,13 +70,13 @@ struct GlanceWeatherStrip: View {
                         VStack(spacing: 4) {
                             ZStack(alignment: .bottom) {
                                 if isCost && unpricedDates.contains(bucket.date) {
-                                    HStack(spacing: 2) {
-                                        Capsule().strokeBorder(color.opacity(0.55), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
-                                            .frame(width: 10)
-                                        Text("金额\n未知").font(.system(size: 8))
-                                            .foregroundStyle(FloatingSurfaceTheme.detail(colorScheme))
-                                            .fixedSize()
-                                    }
+                                    Capsule()
+                                        .fill(color.opacity(0.08))
+                                        .frame(width: 10, height: 30)
+                                        .overlay {
+                                            Capsule()
+                                                .strokeBorder(color.opacity(0.58), style: StrokeStyle(lineWidth: 1, dash: [2.5, 2.5]))
+                                        }
                                 } else {
                                     Capsule().fill(color.opacity(0.08)).frame(width: 10)
                                     Capsule().fill(color.opacity(bucket.value > 0 && bucket.value == maximumValue ? 1 : 0.38))
@@ -100,9 +101,9 @@ struct GlanceWeatherStrip: View {
             }
             if isCost && (!unknownModels.isEmpty || !unpricedDates.isEmpty) {
                 Text("部分模型未计价").font(.system(size: 9)).foregroundStyle(.orange)
-                    .help(unpricedDates.isEmpty
+                    .help(unpricedHelpText ?? (unpricedDates.isEmpty
                           ? "当前账号日志包含未计价模型：" + unknownModels.joined(separator: "、") + "。该提示不限定于最近 7 天。"
-                          : "Claude 用量包含未计价日期；现有快照未提供这些日期的已知部分金额。")
+                          : "Claude 用量包含未计价日期；现有快照未提供这些日期的已知部分金额。"))
             }
         }.weatherModule()
             .onDisappear { hoverClearWorkItem?.cancel() }
@@ -143,35 +144,89 @@ struct GlanceWeatherStrip: View {
 struct GlanceProviderSwitch: View {
     @Binding var selection: GlanceProvider
     var available: [GlanceProvider] = [.codex, .claude]
+    var fullWidth: Bool = false
+    var activeColor: Color? = nil
+    var providerTones: [GlanceProvider: GlanceTone] = [:]
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var highlight
 
+    private func label(for provider: GlanceProvider) -> String {
+        switch provider {
+        case .codex: return "Codex"
+        case .claude: return "Claude"
+        case .grok: return "Grok"
+        case .antigravity: return "Antigravity"
+        }
+    }
+
+    private func accessibilityName(for provider: GlanceProvider) -> String {
+        switch provider {
+        case .codex: return "Codex"
+        case .claude: return "Claude Code"
+        case .grok: return "Grok CLI"
+        case .antigravity: return "Antigravity"
+        }
+    }
+
+    private var switchWidth: CGFloat {
+        available.contains(.antigravity) ? 146 : 128
+    }
+
+    private var controlHeight: CGFloat {
+        fullWidth ? 28 : 26
+    }
+
     var body: some View {
-        HStack(spacing: 0) {
+        let resolvedHighlight = activeColor ?? FloatingSurfaceTheme.accent(colorScheme)
+        let pills = HStack(spacing: 0) {
             ForEach(available, id: \.self) { provider in
+                let warningTone = providerTones[provider].flatMap { $0 == .calm ? nil : $0 }
                 Button {
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { selection = provider }
                 } label: {
-                    Text(provider == .codex ? "Codex" : provider == .grok ? "Grok" : "Claude")
-                        .font(.system(size: 10, weight: .medium))
-                        .frame(maxWidth: .infinity).frame(height: 26)
-                        .foregroundStyle(selection == provider ? FloatingSurfaceTheme.primary(colorScheme) : FloatingSurfaceTheme.secondary(colorScheme))
-                        .background {
-                            if selection == provider {
-                                Capsule().fill(FloatingSurfaceTheme.accent(colorScheme).opacity(0.20))
-                                    .matchedGeometryEffect(id: "glance-provider", in: highlight)
-                            }
+                    HStack(spacing: 3.5) {
+                        if let warningTone {
+                            Circle()
+                                .fill(warningTone.color)
+                                .frame(width: 4.5, height: 4.5)
+                                .accessibilityHidden(true)
                         }
-                        .contentShape(Capsule())
+                        Text(label(for: provider))
+                            .font(.system(size: fullWidth ? 10.5 : 10, weight: selection == provider ? .semibold : .medium))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.78)
+                    }
+                    .padding(.horizontal, 4)
+                    .frame(maxWidth: .infinity).frame(height: controlHeight)
+                    .foregroundStyle(selection == provider ? FloatingSurfaceTheme.primary(colorScheme) : FloatingSurfaceTheme.secondary(colorScheme))
+                    .background {
+                        if selection == provider {
+                            Capsule()
+                                .fill(resolvedHighlight.opacity(0.22))
+                                .overlay {
+                                    Capsule().strokeBorder(resolvedHighlight.opacity(0.32), lineWidth: 0.5)
+                                }
+                                .matchedGeometryEffect(id: "glance-provider", in: highlight)
+                        }
+                    }
+                    .contentShape(Capsule())
                 }.buttonStyle(FloatingSurfaceButtonStyle())
-                    .accessibilityLabel(provider == .codex ? "Codex" : provider == .grok ? "Grok CLI" : "Claude Code")
-                    .accessibilityValue(selection == provider ? "已选择" : "未选择")
+                    .help(accessibilityName(for: provider) + (warningTone == .critical ? " · 额度告急" : (warningTone == .tight ? " · 额度偏紧" : "")))
+                    .accessibilityLabel(accessibilityName(for: provider))
+                    .accessibilityValue((selection == provider ? "已选择" : "未选择") + (warningTone == .critical ? "，额度告急" : (warningTone == .tight ? "，额度偏紧" : "")))
                     .accessibilityAddTraits(selection == provider ? .isSelected : [])
             }
-        }.frame(width: available.count > 2 ? 165 : 126, height: 26)
-            .islandGlass(Capsule(), tint: FloatingSurfaceTheme.chipFill(colorScheme), solidTint: FloatingSurfaceTheme.surface(colorScheme))
-            .accessibilityElement(children: .contain).accessibilityLabel("用量来源")
+        }
+        Group {
+            if fullWidth {
+                pills.frame(maxWidth: .infinity).frame(height: controlHeight)
+            } else {
+                pills.frame(width: switchWidth, height: controlHeight)
+            }
+        }
+        .islandGlass(Capsule(), tint: FloatingSurfaceTheme.chipFill(colorScheme), solidTint: FloatingSurfaceTheme.surface(colorScheme))
+        .accessibilityElement(children: .contain).accessibilityLabel("用量来源")
     }
 }
 

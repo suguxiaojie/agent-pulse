@@ -13,9 +13,19 @@ struct SetupPermissionsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
                 VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 7) {
+                        Capsule().fill(MonitorDesktopTheme.accent.opacity(0.85)).frame(width: 3, height: 11)
+                            .accessibilityHidden(true)
+                        Text("连接与环境概览").font(MonitorDesktopTypography.sectionLabel).tracking(0.8)
+                            .foregroundStyle(MonitorDesktopTheme.secondaryText)
+                            .accessibilityAddTraits(.isHeader)
+                        Spacer(minLength: 8)
+                        Text("通知与任务状态连接均可按需开启")
+                            .font(MonitorDesktopTypography.metadata)
+                            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                    }
+                    .padding(.horizontal, 4)
                     statusOverview
-                    Text("通知与任务状态连接均可按需开启。")
-                        .font(.system(size: 11)).foregroundStyle(MonitorDesktopTheme.faintText)
                 }.modifier(MonitorDesktopReveal(delay: 0))
                 if !store.isSetupOnboardingComplete { onboarding.modifier(MonitorDesktopReveal(delay: 0.04)) }
                 PanelSettingsGroup(title: "权限与连接", symbol: "checkmark.shield") {
@@ -64,15 +74,24 @@ struct SetupPermissionsView: View {
                     }
                     SettingsRowDivider()
                     SettingsRow(symbol: "antenna.radiowaves.left.and.right", title: "关注信号提醒", detail: "新的待验证信号与重置预告。") {
-                        Toggle("关注信号提醒", isOn: $store.notifyTiboSignals).labelsHidden().toggleStyle(.switch)
+                        Toggle("关注信号提醒", isOn: $store.notifyTiboSignals)
+                            .labelsHidden()
+                            .toggleStyle(PanelSettingsToggleStyle(onTitle: "开启", offTitle: "关闭"))
+                            .accessibilityLabel("关注信号提醒")
                     }
                     SettingsRowDivider()
                     SettingsRow(symbol: "arrow.counterclockwise", title: "额度恢复提醒", detail: "额度恢复立即提醒，原因确认后静音更新。") {
-                        Toggle("额度恢复提醒", isOn: $store.notifyQuotaRecovery).labelsHidden().toggleStyle(.switch)
+                        Toggle("额度恢复提醒", isOn: $store.notifyQuotaRecovery)
+                            .labelsHidden()
+                            .toggleStyle(PanelSettingsToggleStyle(onTitle: "开启", offTitle: "关闭"))
+                            .accessibilityLabel("额度恢复提醒")
                     }
                     SettingsRowDivider()
                     SettingsRow(symbol: "clock.badge.exclamationmark", title: "重置卡到期提醒", detail: "应用运行时，在到期前 24、12、6 小时分别提醒。") {
-                        Toggle("重置卡到期提醒", isOn: $store.notifyCreditExpiry).labelsHidden().toggleStyle(.switch)
+                        Toggle("重置卡到期提醒", isOn: $store.notifyCreditExpiry)
+                            .labelsHidden()
+                            .toggleStyle(PanelSettingsToggleStyle(onTitle: "开启", offTitle: "关闭"))
+                            .accessibilityLabel("重置卡到期提醒")
                     }
                 }.modifier(MonitorDesktopReveal(delay: 0.08))
                 PanelSettingsGroup(title: "应用更新", symbol: "arrow.triangle.2.circlepath") {
@@ -97,7 +116,7 @@ struct SetupPermissionsView: View {
                     }
                 }.modifier(MonitorDesktopReveal(delay: 0.12))
             }
-            .frame(maxWidth: 760).frame(maxWidth: .infinity, alignment: .leading).padding(4).padding(.bottom, 20)
+            .frame(maxWidth: .infinity, alignment: .leading).padding(4).padding(.bottom, 20)
         }
         .foregroundStyle(PanelSettingsTheme.primary)
         .tint(PanelSettingsTheme.clay)
@@ -113,6 +132,8 @@ struct SetupPermissionsView: View {
                     .buttonStyle(PanelSettingsActionStyle()).accessibilityLabel("关闭连接诊断")
             }
             Text(store.codexSetupSnapshot?.codexExecutableURL.map { "Codex CLI：" + $0.path } ?? "未找到 Codex CLI；请确认 Codex 已安装。")
+                .textSelection(.enabled)
+            Text("Antigravity：" + store.antigravity.installation.summaryText)
                 .textSelection(.enabled)
             Text("任务状态通过本机桌面 IPC 获取，断线时回退本地日志。批准、回答和消息仍在原客户端操作。")
             Text("可运行真实任务核对灵动岛状态；任务结束后保留额度／空闲横幅。")

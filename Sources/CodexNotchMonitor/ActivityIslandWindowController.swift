@@ -118,6 +118,7 @@ final class ActivityIslandWindowController: NSObject {
             if self.model.showsUsagePage {
                 if self.model.usageProvider == .claude { self.store.claude.refreshUsage() }
                 else if self.model.usageProvider == .grok { self.store.grok.refresh() }
+                else if self.model.usageProvider == .antigravity { self.store.antigravity.refresh() }
                 else { self.store.refreshQuota(); self.store.refreshCost() }
             }
             else { self.store.refreshSessionActivity() }
@@ -171,6 +172,14 @@ final class ActivityIslandWindowController: NSObject {
         store.grok.$usage.sink { [weak self] in self?.model.grokUsage = $0 }.store(in: &cancellables)
         store.grok.$quotaFailed.sink { [weak self] in self?.model.grokQuotaFailed = $0 }.store(in: &cancellables)
         store.grok.$quotaStatus.sink { [weak self] in self?.model.grokQuotaStatus = $0 }.store(in: &cancellables)
+        store.antigravity.$enabled.removeDuplicates().sink { [weak self] enabled in
+            guard let self else { return }
+            self.model.antigravityEnabled = enabled
+            if !enabled && self.model.usageProvider == .antigravity { self.model.selectUsageProvider(.codex) }
+        }.store(in: &cancellables)
+        store.antigravity.$statusLineEnabled.removeDuplicates().sink { [weak self] in self?.model.antigravityStatusLineEnabled = $0 }.store(in: &cancellables)
+        store.antigravity.$quota.sink { [weak self] in self?.model.antigravityQuota = $0 }.store(in: &cancellables)
+        store.antigravity.$usage.sink { [weak self] in self?.model.antigravityUsage = $0 }.store(in: &cancellables)
         store.$costSnapshot.sink { [weak self] in self?.model.usageCost = $0 }.store(in: &cancellables)
         store.$accountUsage.sink { [weak self] in self?.model.accountUsage = $0 }.store(in: &cancellables)
         store.$quotaResetCredits.sink { [weak self] in self?.model.resetCredits = $0 }.store(in: &cancellables)

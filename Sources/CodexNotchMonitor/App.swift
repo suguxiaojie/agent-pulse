@@ -108,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         store.claude.stop()
         store.grok.stop()
+        store.antigravity.stop()
         statusCountdownTimer?.invalidate()
         statusRotationTimer?.invalidate()
         statusCapacityRecoveryWork?.cancel()
@@ -121,7 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let button = item.button {
             let image = NSImage(
                 systemSymbolName: "circle.dotted",
-                accessibilityDescription: "Codex Pulse"
+                accessibilityDescription: "Agent Pulse"
             )
             image?.isTemplate = true
             button.image = image
@@ -354,7 +355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         animateStatusRotation = false
         button.imageScaling = .scaleProportionallyDown
         button.font = font
-        button.image = image ?? NSImage(systemSymbolName: "circle.dotted", accessibilityDescription: "Codex Pulse")
+        button.image = image ?? NSImage(systemSymbolName: "circle.dotted", accessibilityDescription: "Agent Pulse")
         // Let AppKit measure the actual ring, title and spacing; the selection
         // budget is a ceiling, not a visible empty reservation.
         button.imagePosition = layout.title.isEmpty ? .imageOnly : .imageLeading
@@ -373,7 +374,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.layer?.removeAnimation(forKey: "statusRotation")
         }
         button.toolTip = tooltip
-        button.setAccessibilityLabel("Codex Pulse\n" + tooltip)
+        button.setAccessibilityLabel("Agent Pulse\n" + tooltip)
         statusGeometryGeneration += 1
         let generation = statusGeometryGeneration
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in

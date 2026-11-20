@@ -167,6 +167,7 @@ struct QuotaStyleSettingsView: View {
     private var contentGroup: some View {
         PanelSettingsGroup(title: "显示内容", symbol: "rectangle.on.rectangle") {
             toggle("悬浮用量胶囊", symbol: "capsule.portrait", detail: "显示剩余额度和重置倒计时。", value: $floatingUsageEnabled)
+            SettingsRowDivider()
             SettingsRow(symbol: "square.stack.3d.up", title: "胶囊样式", detail: "只影响悬浮用量胶囊；岛体始终为纯黑。") {
                 Picker("胶囊样式", selection: capsuleStyleBinding) {
                     ForEach(ActivityIslandCapsuleStyle.allCases) { Text($0.title).tag($0.rawValue) }
@@ -183,12 +184,22 @@ struct QuotaStyleSettingsView: View {
     }
     private var clawdGroup: some View {
         PanelSettingsGroup(title: "桌宠", symbol: "pawprint") {
-            toggle("显示桌宠", symbol: "figure.climbing", detail: "Codex 任务显示终端仔，Claude Code 任务显示 Clawd，Grok 任务显示 Grok Bot，随任务状态做动作。", value: $clawdEnabled)
+            toggle("显示桌宠", symbol: "figure.climbing", detail: "Codex 显示终端仔、Claude 显示 Clawd、Grok 显示 Grok Bot、Antigravity 显示浮游星核，随任务状态联动。", value: $clawdEnabled)
             SettingsRowDivider()
             SettingsRow(symbol: "arrow.up.left.and.arrow.down.right", title: "桌宠大小", detail: "按紧凑灵动岛高度限制大小，保持完整可见。") {
-                Picker("桌宠大小", selection: $clawdSize) {
-                    ForEach(IslandClawdSize.allCases) { Text($0.title).tag($0.rawValue) }
-                }.labelsHidden().pickerStyle(.segmented).frame(width: 150)
+                PanelSettingsSegments(
+                    options: IslandClawdSize.allCases.map(\.title),
+                    selection: Binding(
+                        get: { (IslandClawdSize(rawValue: clawdSize) ?? .medium).title },
+                        set: { title in
+                            if let matched = IslandClawdSize.allCases.first(where: { $0.title == title }) {
+                                clawdSize = matched.rawValue
+                            }
+                        }
+                    ),
+                    width: 144,
+                    title: "桌宠大小"
+                )
             }.disabled(!clawdEnabled)
         }.modifier(MonitorDesktopReveal(delay: 0.1))
     }
@@ -204,18 +215,38 @@ struct QuotaStyleSettingsView: View {
             }.padding(.vertical, 14)
             SettingsRowDivider()
             SettingsRow(symbol: "dial.medium", title: "特效画质", detail: "流畅最细腻；均衡兼顾顺滑与耗电；省电降低帧率和分辨率。") {
-                Picker("特效画质", selection: $effectQuality) {
-                    ForEach(ActivityIslandEffectQuality.allCases) { Text($0.title).tag($0.rawValue) }
-                }.labelsHidden().pickerStyle(.segmented)
+                PanelSettingsSegments(
+                    options: ActivityIslandEffectQuality.allCases.map(\.title),
+                    selection: Binding(
+                        get: { (ActivityIslandEffectQuality(rawValue: effectQuality) ?? .balanced).title },
+                        set: { title in
+                            if let matched = ActivityIslandEffectQuality.allCases.first(where: { $0.title == title }) {
+                                effectQuality = matched.rawValue
+                            }
+                        }
+                    ),
+                    width: 168,
+                    title: "特效画质"
+                )
             }
         }.modifier(MonitorDesktopReveal(delay: 0.12))
     }
     private var feedbackGroup: some View {
         PanelSettingsGroup(title: "完成与提醒", symbol: "bell.badge") {
             SettingsRow(symbol: "party.popper", title: "礼花", detail: "任务完成时播放；减弱动态效果开启时不播放。") {
-                Picker("礼花", selection: $confettiIntensity) {
-                    ForEach(ActivityIslandConfettiIntensity.allCases) { Text($0.title).tag($0.rawValue) }
-                }.labelsHidden().pickerStyle(.segmented)
+                PanelSettingsSegments(
+                    options: ActivityIslandConfettiIntensity.allCases.map(\.title),
+                    selection: Binding(
+                        get: { (ActivityIslandConfettiIntensity(rawValue: confettiIntensity) ?? .standard).title },
+                        set: { title in
+                            if let matched = ActivityIslandConfettiIntensity.allCases.first(where: { $0.title == title }) {
+                                confettiIntensity = matched.rawValue
+                            }
+                        }
+                    ),
+                    width: 196,
+                    title: "礼花"
+                )
             }
             SettingsRowDivider()
             soundRow(title: "完成提示音", symbol: "speaker.wave.2", detail: "任务完成时播放，跟随系统音量。", selection: completionSoundBinding)
@@ -236,9 +267,19 @@ struct QuotaStyleSettingsView: View {
     private var automaticGroup: some View {
         PanelSettingsGroup(title: "展开与弹出", symbol: "arrow.up.left.and.arrow.down.right") {
             SettingsRow(symbol: "cursorarrow.rays", title: "展开方式", detail: "悬停：鼠标移上去就展开；点击：点一下才展开，避免误触。") {
-                Picker("展开方式", selection: $expandTrigger) {
-                    ForEach(ActivityIslandExpandTrigger.allCases) { Text($0.title).tag($0.rawValue) }
-                }.labelsHidden().pickerStyle(.segmented).frame(width: 120)
+                PanelSettingsSegments(
+                    options: ActivityIslandExpandTrigger.allCases.map(\.title),
+                    selection: Binding(
+                        get: { (ActivityIslandExpandTrigger(rawValue: expandTrigger) ?? .hover).title },
+                        set: { title in
+                            if let matched = ActivityIslandExpandTrigger.allCases.first(where: { $0.title == title }) {
+                                expandTrigger = matched.rawValue
+                            }
+                        }
+                    ),
+                    width: 124,
+                    title: "展开方式"
+                )
             }
             SettingsRowDivider()
             toggle("自动弹出", symbol: "bolt", detail: "新任务、完成或待确认时展开。", value: $automaticPopup)

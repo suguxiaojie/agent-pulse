@@ -367,34 +367,190 @@ struct GrokGlanceContent: View {
     let showDaily: Bool
     let showMonth: Bool
     @Binding var metric: String
+    var weatherColor: Color = GlanceTone.calm.color
+    var showsInlinePlanBadge: Bool = true
+    var showCreditBalance: Bool = true
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
-        VStack(spacing: 12) {
-            if showQuota { GrokQuotaView(runtime: runtime, now: now).weatherModule() }
+        VStack(spacing: GlanceLayout.moduleSpacing) {
+            if showQuota {
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    let displayNow = GrokDisplayClock.now(sampled: context.date)
+                    VStack(alignment: .leading, spacing: 7) {
+                        if let quota = runtime.quota, quota.isAvailable(at: displayNow) {
+                            let old = runtime.quotaFailed || quota.isStale(at: displayNow)
+                            let durationMinutes: Int? = {
+                                if let start = quota.startsAt, let end = quota.resetsAt, end > start {
+                                    return max(1, Int(end.timeIntervalSince(start) / 60))
+                                }
+                                if quota.periodType == "USAGE_PERIOD_TYPE_WEEKLY" { return 10_080 }
+                                if quota.periodType == "USAGE_PERIOD_TYPE_MONTHLY" { return 43_200 }
+                                return nil
+                            }()
+                            let rlWindow = RateLimitWindow(
+                                usedPercent: Int(quota.usedPercent.rounded()),
+                                windowDurationMinutes: durationMinutes,
+                                resetsAt: quota.resetsAt
+                            )
+                            let forecast = QuotaPaceForecast(window: rlWindow, now: displayNow)
+                            let copy = forecast.copy(resetsAt: quota.resetsAt, now: displayNow)
+
+                            HStack(spacing: 5) {
+                                Text(quota.title)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(secondaryText)
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                                if showsInlinePlanBadge, let plan = quota.plan {
+                                    HStack(spacing: 4) {
+                                        Circle()
+                                            .fill(old ? Color.orange.opacity(0.88) : Color.green.opacity(0.90))
+                                            .frame(width: 5, height: 5)
+                                        Text(plan)
+                                            .font(.system(size: 9, weight: .medium))
+                                            .lineLimit(1)
+                                            .minimumScaleFactor(0.82)
+                                    }
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 5)
+                                    .background(FloatingSurfaceTheme.chipFill(colorScheme), in: Capsule())
+                                }
+                            }
+
+                            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                                Text("\(quota.remainingPercent)")
+                                    .font(.system(size: 64, weight: .semibold, design: .rounded))
+                                    .monospacedDigit()
+                                    .contentTransition(.numericText())
+                                Text("%")
+                                    .font(.system(size: 27, weight: .medium, design: .rounded))
+                                    .foregroundStyle(secondaryText)
+                            }
+                            .glanceReadableText()
+                            .opacity(old ? 0.58 : 1)
+                            .accessibilityLabel((old ? "上次观测，非当前。" : "") + "剩余 \(quota.remainingPercent)%")
+
+                            Text(copy.primary)
+                                .font(.system(size: 12.5, weight: .medium))
+                                .glanceReadableText()
+                            Text(copy.secondary + observationSuffix(old: old, capturedAt: quota.capturedAt))
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(tertiaryText)
+
+                            if quota.sharedPool == true {
+                                Text("统一共享额度池 · 含其他 xAI 产品用量")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(secondaryText)
+                                    .lineLimit(1)
+                            }
+                            if runtime.quotaFailed {
+                                Text(runtime.quotaStatus)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.orange)
+                                    .lineLimit(1)
+                            }
+                        } else {
+                            Text("Grok 额度")
+                                .font(FloatingSurfaceTypography.section)
+                            Text(runtime.quotaStatus == "官方额度已同步"
+                                 ? (runtime.quota?.resetsAt.map { $0 <= displayNow } == true
+                                    ? "额度周期已结束，等待重新查询"
+                                    : "额度暂不可用，等待重新查询")
+                                 : runtime.quotaStatus)
+                                .font(FloatingSurfaceTypography.label)
+                                .foregroundStyle(tertiaryText)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 156, alignment: .leading)
+                    .padding(.vertical, 6)
+                }
+            }
             if showCost || showActivity {
                 let cost = showCost && (!showActivity || metric != "token")
                 let days = runtime.usage?.days ?? []
-                GlanceWeatherStrip(buckets: GlanceDayStrip.buckets(samples: days.compactMap { day in
-                    (cost ? day.cost : Double(day.tokens)).map { .init(date: day.date, value: $0) }
-                }, now: now), isCost: cost, isReady: runtime.usage != nil, showsSelector: showCost && showActivity,
-                    metric: $metric, color: FloatingSurfaceTheme.accent(), unknownModels: [], loadingText: "正在统计 Grok 用量…",
-                    tokenSourceLabel: "本机 Grok 用量", unpricedDates: Set(days.filter { $0.cost == nil }.map(\.date)))
+                GlanceWeatherStrip(
+                    buckets: GlanceDayStrip.buckets(samples: days.compactMap { day in
+                        (cost ? day.cost : Double(day.tokens)).map { .init(date: day.date, value: $0) }
+                    }, now: now),
+                    isCost: cost,
+                    isReady: runtime.usage != nil,
+                    showsSelector: showCost && showActivity,
+                    metric: $metric,
+                    color: weatherColor,
+                    unknownModels: [],
+                    loadingText: "正在统计 Grok 用量…",
+                    tokenSourceLabel: "本机 Grok 用量",
+                    unpricedDates: Set(days.filter { $0.cost == nil }.map(\.date)),
+                    unpricedHelpText: "Grok 本地日志包含未附带完整美分计费的记录，对应日期标记为金额未知。"
+                )
             }
-            if showDaily || showMonth {
-                let today = Calendar.current.startOfDay(for: now)
-                let lower = Calendar.current.date(byAdding: .day, value: -29, to: today)!
-                HStack {
-                    if showDaily { smallMetric("今日 Token", runtime.usage?.days.first { $0.date == today }?.tokens ?? 0) }
-                    if showMonth { smallMetric("30 日 Token", (runtime.usage?.days ?? []).filter { $0.date >= lower && $0.date <= today }.reduce(0) { GrokJSON.add($0, $1.tokens) }) }
-                }.weatherModule()
+            if runtime.usage != nil || (showCreditBalance && runtime.quota?.prepaidCents != nil) {
+                dataBlocks
+            } else if !showCost && !showActivity {
+                Text("正在统计 Grok 用量…")
+                    .font(FloatingSurfaceTypography.label)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .weatherModule()
             }
-            Text("本机历史不代表当前账号账单" + (runtime.usage?.complete == false ? " · 部分记录" : ""))
-                .font(.system(size: 10)).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
         }
     }
-    private func smallMetric(_ title: String, _ tokens: Int) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title).font(.system(size: 10)).foregroundStyle(.secondary)
-            Text(runtime.usage == nil ? "—" : GlanceDayStrip.tokenText(Double(tokens))).font(.system(size: 15, weight: .semibold)).monospacedDigit()
-        }.frame(maxWidth: .infinity, alignment: .leading)
+
+    @ViewBuilder
+    private var dataBlocks: some View {
+        let today = Calendar.current.startOfDay(for: now)
+        let lower = Calendar.current.date(byAdding: .day, value: -29, to: today)!
+        let todayTokens = runtime.usage?.days.first { $0.date == today }?.tokens ?? 0
+        let monthTokens = (runtime.usage?.days ?? [])
+            .filter { $0.date >= lower && $0.date <= today }
+            .reduce(0) { GrokJSON.add($0, $1.tokens) }
+        let prepaid = showCreditBalance ? runtime.quota?.prepaidCents : nil
+
+        if prepaid != nil || showDaily || showMonth {
+            HStack(spacing: 6) {
+                if let cents = prepaid {
+                    dataBlock("预付余额", value: String(format: "$%.2f", Double(cents) / 100))
+                }
+                if showDaily {
+                    dataBlock("今日 Token", value: runtime.usage == nil ? "—" : GlanceDayStrip.tokenText(Double(todayTokens)))
+                }
+                if showMonth {
+                    dataBlock("30 日 Token", value: runtime.usage == nil ? "—" : GlanceDayStrip.tokenText(Double(monthTokens)))
+                }
+                if prepaid == nil {
+                    dataBlock("累计 Token", value: runtime.usage.map { GlanceDayStrip.tokenText(Double($0.lifetimeTokens)) } ?? "—")
+                }
+            }
+        }
+    }
+
+    private func dataBlock(_ title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.system(size: 9)).foregroundStyle(secondaryText)
+            Text(value)
+                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .glanceReadableText()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .weatherModule()
+        .accessibilityElement(children: .combine)
+    }
+
+    private func observationSuffix(old: Bool, capturedAt: Date) -> String {
+        guard old else { return "" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return " · 数据于 " + formatter.string(from: capturedAt)
+    }
+
+    private var secondaryText: Color {
+        FloatingSurfaceTheme.detail(colorScheme)
+    }
+
+    private var tertiaryText: Color {
+        FloatingSurfaceTheme.secondary(colorScheme)
     }
 }

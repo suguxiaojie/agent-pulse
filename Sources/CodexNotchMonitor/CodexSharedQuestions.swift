@@ -151,8 +151,11 @@ final class CodexSharedQuestions {
     private var nextPoll = Date.distantPast
     private var timer: Timer?
     private let queue = DispatchQueue(label: "com.coverai.codex-pulse.shared-questions", qos: .utility)
-    private var transport: CodexProxyTransport?
-    private var engine: CodexSharedQuestionEngine?
+    private struct Connection {
+        let transport: CodexProxyTransport
+        let engine: CodexSharedQuestionEngine
+    }
+    private var connections: [String: Connection] = [:]
     private var blocked: Set<String> = []
     private var messages: [String: String] = [:]
     private var lastSuccess = Date.distantPast
@@ -174,19 +177,32 @@ final class CodexSharedQuestions {
             guard let self else { return }
             var result: [String: CodexSharedQuestionSnapshot] = [:]
             var success = false
-            do {
-                if self.engine == nil {
-                    // One Native's standalone launcher owns this shared daemon. No new daemon is started.
-                    let executable = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/codex")
-                    guard FileManager.default.isExecutableFile(atPath: executable.path) else { throw CodexProxyTransport.Failure.unavailable }
-                    let transport = try CodexProxyTransport(executable: executable)
-                    self.transport = transport
-                    self.engine = CodexSharedQuestionEngine { try transport.request($0, $1) }
-                }
-                result = try self.engine!.poll(threadIDs: ids); success = true
-            } catch {
-                self.transport?.close(); self.transport = nil; self.engine = nil
+            let surfaces = CodexSurfaceEndpoints.discover()
+            let endpoints: [(String, URL?)] = [("default", nil)] + surfaces.map { ($0.identity, $0.socket) }
+            let validKeys = Set(endpoints.map { $0.0 })
+            for key in self.connections.keys.filter({ !validKeys.contains($0) }) {
+                self.connections.removeValue(forKey: key)?.transport.close()
             }
+            var duplicates = Set<String>()
+            for (key, socket) in endpoints {
+                do {
+                    if self.connections[key] == nil {
+                        let executable = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/codex")
+                        guard FileManager.default.isExecutableFile(atPath: executable.path) else { throw CodexProxyTransport.Failure.unavailable }
+                        let transport = try CodexProxyTransport(executable: executable, socketURL: socket)
+                        self.connections[key] = .init(transport: transport, engine: CodexSharedQuestionEngine { try transport.request($0, $1) })
+                    }
+                    let page = try self.connections[key]!.engine.poll(threadIDs: ids)
+                    for (thread, snapshot) in page {
+                        if result[thread] != nil { duplicates.insert(thread) }
+                        result[thread] = snapshot
+                    }
+                    success = true
+                } catch {
+                    self.connections.removeValue(forKey: key)?.transport.close()
+                }
+            }
+            for thread in duplicates { result.removeValue(forKey: thread) }
             DispatchQueue.main.async {
                 self.busy = false
                 if success { self.lastSuccess = Date() }
@@ -207,7 +223,13 @@ final class CodexSharedQuestions {
             queue.async { [weak self] in
                 guard let self else { continuation.resume(returning: "连接已关闭"); return }
                 let result: String
-                do { result = try self.engine?.submit(snapshot, answers: answers) ?? "连接已关闭，请到 One Native 查看" }
+                do {
+                    let currentSurfaces = Set(CodexSurfaceEndpoints.discover().map(\.identity))
+                    let connection = self.connections.first {
+                        $0.value.engine.epoch == snapshot.epoch && ($0.key == "default" || currentSurfaces.contains($0.key))
+                    }?.value
+                    result = try connection?.engine.submit(snapshot, answers: answers) ?? "连接已关闭，请到 One Native 查看"
+                }
                 catch { result = "请求未能确认，请到 One Native 查看" }
                 DispatchQueue.main.async {
                     self.busy = false; self.messages[snapshot.requestKey] = result

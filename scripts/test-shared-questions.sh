@@ -3,6 +3,9 @@ set -euo pipefail
 project_dir="${0:A:h:h}"
 cd "$project_dir"
 mkdir -p .tmp/shared-question-tests
+swiftc -swift-version 5 -parse-as-library Sources/CodexNotchMonitor/CodexSurfaceEndpoints.swift \
+ Sources/CodexNotchMonitor/CodexProxyTransport.swift Tests/CodexSurfaceEndpointTests.swift -o .tmp/shared-question-tests/surfaces
+.tmp/shared-question-tests/surfaces
 clang -O2 -mmacosx-version-min=13.0 -c Vendor/Zstd/zstddeclib.c -o .tmp/shared-question-tests/zstd.o
 swiftc -swift-version 5 -parse-as-library -I Vendor/Zstd/include .tmp/shared-question-tests/zstd.o \
  Sources/CodexNotchMonitor/FastTimestamp.swift Sources/CodexNotchMonitor/CountFormatter.swift \
@@ -12,6 +15,7 @@ swiftc -swift-version 5 -parse-as-library -I Vendor/Zstd/include .tmp/shared-que
  Sources/CodexNotchMonitor/TurnTokenState.swift Sources/CodexNotchMonitor/SessionActivityService.swift \
  Sources/CodexNotchMonitor/CodexNativeActivityTypes.swift Sources/CodexNotchMonitor/CodexDesktopIPCClient.swift \
  Sources/CodexNotchMonitor/CodexDesktopRequestProjection.swift Sources/CodexNotchMonitor/CodexProxyTransport.swift \
+ Sources/CodexNotchMonitor/CodexSurfaceEndpoints.swift \
  Sources/CodexNotchMonitor/CodexSharedQuestions.swift Tests/CodexSharedQuestionTests.swift \
  -o .tmp/shared-question-tests/questions
 .tmp/shared-question-tests/questions

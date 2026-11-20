@@ -21,6 +21,7 @@ enum MonitorCenterSection: String, CaseIterable, Identifiable {
     case continuity = "会话管理"
     case claude = "Claude Code"
     case grok = "Grok CLI"
+    case antigravity = "Antigravity"
     case panelSettings = "面板设置"
     case setup = "安装与权限"
     case settings = "灵动岛设置"
@@ -42,6 +43,7 @@ enum MonitorCenterSection: String, CaseIterable, Identifiable {
         case .continuity: return "bubble.left.and.bubble.right"
         case .claude: return "terminal"
         case .grok: return "sparkle"
+        case .antigravity: return "sparkles"
         case .panelSettings: return "rectangle.on.rectangle"
         case .setup: return "checkmark.shield"
         case .settings: return "gearshape"
@@ -56,16 +58,17 @@ enum MonitorCenterSection: String, CaseIterable, Identifiable {
         case .continuity: return "本地会话连续性"
         case .claude: return "任务、权限请求与本机用量"
         case .grok: return "官方额度、任务与本机用量"
+        case .antigravity: return "三端任务、官方额度与本机用量"
         case .panelSettings: return "菜单栏内容与概览面板"
         case .setup: return "应用更新、通知权限与监控连接"
-        case .settings: return "材质、隐私、任务特效与自动展开"
+        case .settings: return "边缘光、桌宠、任务特效与自动展开"
         }
     }
 
     var isSettings: Bool {
         switch self {
         case .panelSettings, .setup, .settings: return true
-        case .usage, .cost, .tibo, .continuity, .claude, .grok: return false
+        case .usage, .cost, .tibo, .continuity, .claude, .grok, .antigravity: return false
         }
     }
 }
@@ -878,7 +881,7 @@ struct NotchView: View {
                     .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous)
                         .strokeBorder(MonitorDesktopTheme.rimHighlight.opacity(0.08), lineWidth: 0.75))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Codex Pulse")
+                    Text("Agent Pulse")
                         .font(.system(size: 16, weight: .semibold))
                         .tracking(-0.2)
                     Text("本地用量与会话")
@@ -1457,6 +1460,8 @@ struct NotchView: View {
             ClaudeCodeView(runtime: store.claude)
         case .grok:
             GrokView(runtime: store.grok)
+        case .antigravity:
+            AntigravityView(runtime: store.antigravity)
         case .panelSettings:
             GlanceContentSettingsView(store: store)
         case .setup:
@@ -1498,7 +1503,7 @@ struct NotchView: View {
         switch expandedPage {
         case .usage, .cost, .tibo, .continuity:
             return true
-        case .panelSettings, .setup, .settings, .claude, .grok:
+        case .panelSettings, .setup, .settings, .claude, .grok, .antigravity:
             return false
         }
     }
@@ -1511,7 +1516,7 @@ struct NotchView: View {
             return store.isTiboFeedLoading
         case .continuity:
             return store.isContinuityLoading
-        case .panelSettings, .setup, .settings, .claude, .grok:
+        case .panelSettings, .setup, .settings, .claude, .grok, .antigravity:
             return false
         }
     }
@@ -1530,7 +1535,7 @@ struct NotchView: View {
             store.refreshTiboFeed()
         case .continuity:
             store.refreshContinuity(forceInventory: true)
-        case .panelSettings, .setup, .settings, .claude, .grok:
+        case .panelSettings, .setup, .settings, .claude, .grok, .antigravity:
             break
         }
     }
@@ -4302,7 +4307,7 @@ struct NotchView: View {
             }
             .buttonStyle(MonitorCenterPressStyle())
             .contentShape(Rectangle())
-            .help("前往系统设置，为 Codex Pulse 开启通知")
+            .help("前往系统设置，为 Agent Pulse 开启通知")
         } else {
             MonitorMetaChip(quotaNotificationStatusText)
                 .font(.system(size: 11, weight: .medium, design: .rounded))
@@ -5633,7 +5638,7 @@ struct CodexMark: View {
             }
         }
         .frame(width: size, height: size)
-        .accessibilityLabel("Codex Pulse 标识")
+        .accessibilityLabel("Agent Pulse 标识")
     }
 
     private static let pulseLogo: NSImage? = {

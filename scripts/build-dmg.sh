@@ -33,7 +33,7 @@ ln -s /Applications "$staging_dir/Applications"
 
 rm -f "$dmg_path"
 hdiutil create \
-  -volname "Codex Pulse" \
+  -volname "Agent Pulse" \
   -fs HFS+ \
   -srcfolder "$staging_dir" \
   -format UDZO \

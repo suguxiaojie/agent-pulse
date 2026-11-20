@@ -43,19 +43,66 @@ struct ClaudeMarkShape: Shape {
     }
 }
 
+struct AntigravityMarkShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let radius = min(rect.width, rect.height) / 2
+        guard radius > 0 else { return Path() }
+        let cx = rect.midX, cy = rect.midY
+        let outer = radius * 0.94
+        let waist = radius * 0.28
+        var path = Path()
+        path.move(to: CGPoint(x: cx, y: cy - outer))
+        path.addQuadCurve(to: CGPoint(x: cx + outer, y: cy), control: CGPoint(x: cx + waist, y: cy - waist))
+        path.addQuadCurve(to: CGPoint(x: cx, y: cy + outer), control: CGPoint(x: cx + waist, y: cy + waist))
+        path.addQuadCurve(to: CGPoint(x: cx - outer, y: cy), control: CGPoint(x: cx - waist, y: cy + waist))
+        path.addQuadCurve(to: CGPoint(x: cx, y: cy - outer), control: CGPoint(x: cx - waist, y: cy - waist))
+        path.closeSubpath()
+        return path
+    }
+}
+
 struct IslandUsageProviderSwitch: View {
     @ObservedObject var model: ActivityIslandViewModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var selection
 
+    private var visibleProviders: [IslandUsageProvider] {
+        IslandUsageProvider.allCases.filter {
+            ($0 != .grok || model.grokEnabled) && ($0 != .antigravity || model.antigravityEnabled)
+        }
+    }
+
+    private var controlWidth: CGFloat {
+        switch visibleProviders.count {
+        case ..<3: return 240
+        case 3: return 330
+        default: return 374
+        }
+    }
+
+    private func switchLabel(for provider: IslandUsageProvider, compact: Bool) -> String {
+        guard compact else { return provider.rawValue }
+        switch provider {
+        case .codex: return "Codex"
+        case .claude: return "Claude"
+        case .grok: return "Grok"
+        case .antigravity: return "Antigravity"
+        }
+    }
+
     var body: some View {
+        let providers = visibleProviders
+        let compact = providers.count >= 4
         HStack(spacing: 0) {
-            ForEach(IslandUsageProvider.allCases.filter { $0 != .grok || model.grokEnabled }, id: \.self) { provider in
-                let disabled = (provider == .claude && !model.claudeEnabled) || (provider == .grok && !model.grokEnabled) || model.resetBusy || model.resetConfirmationPresented
+            ForEach(providers, id: \.self) { provider in
+                let disabled = (provider == .claude && !model.claudeEnabled)
+                    || (provider == .grok && !model.grokEnabled)
+                    || (provider == .antigravity && !model.antigravityEnabled)
+                    || model.resetBusy || model.resetConfirmationPresented
                 Button {
                     withAnimation(reduceMotion ? nil : FloatingSurfaceTheme.selectionMotion) { model.selectUsageProvider(provider) }
                 } label: {
-                    HStack(spacing: 5) {
+                    HStack(spacing: compact ? 4 : 5) {
                         if provider == .codex {
                             if let icon = ActivityIslandPreviewAssets.codexIcon {
                                 Image(nsImage: icon).renderingMode(.template).resizable().scaledToFit()
@@ -63,14 +110,19 @@ struct IslandUsageProviderSwitch: View {
                             }
                         } else if provider == .grok {
                             Image(systemName: "sparkle").font(.system(size: 12)).accessibilityHidden(true)
+                        } else if provider == .antigravity {
+                            AntigravityMarkShape().fill(Color(red: 0.494, green: 0.620, blue: 1.0))
+                                .frame(width: 13, height: 13)
+                                .opacity(model.usageProvider == provider ? 1 : 0.65)
+                                .saturation(disabled ? 0 : 1).accessibilityHidden(true)
                         } else {
                             ClaudeMarkShape().fill(Color(red: 0.851, green: 0.467, blue: 0.341))
                                 .frame(width: 13, height: 13)
                                 .opacity(model.usageProvider == provider ? 1 : 0.6)
                                 .saturation(disabled ? 0 : 1).accessibilityHidden(true)
                         }
-                        Text(provider.rawValue).font(FloatingSurfaceTypography.control)
-                            .lineLimit(1).minimumScaleFactor(0.85)
+                        Text(switchLabel(for: provider, compact: compact)).font(FloatingSurfaceTypography.control)
+                            .lineLimit(1).minimumScaleFactor(0.75)
                     }
                         .frame(maxWidth: .infinity).frame(height: 28)
                         .foregroundStyle(model.usageProvider == provider ? FloatingSurfaceTheme.primary() : FloatingSurfaceTheme.secondary())
@@ -88,7 +140,7 @@ struct IslandUsageProviderSwitch: View {
                     .accessibilityAddTraits(model.usageProvider == provider ? .isSelected : [])
                     .help(provider == .claude && !model.claudeEnabled ? "请先在监控中心启用 Claude Code" : "查看 " + provider.rawValue + " 用量")
             }
-        }.frame(width: model.grokEnabled ? 330 : 240, height: 28)
+        }.frame(width: controlWidth, height: 28)
             .islandGlass(Capsule(), tint: .black.opacity(0.28))
             .animation(reduceMotion ? nil : FloatingSurfaceTheme.selectionMotion, value: model.usageProvider)
             .accessibilityElement(children: .contain).accessibilityLabel("用量来源")
@@ -125,6 +177,17 @@ struct IslandUsageSourceCard: View, IslandUsageFormatting {
                     heading("历史 · 本机记录，非订阅账单")
                 }.frame(maxHeight: .infinity, alignment: .topLeading)
             }
+        case .antigravity(let plan, let credits, let useG1Credits):
+            surface {
+                VStack(alignment: .leading, spacing: 8) {
+                    heading("Antigravity 官方额度")
+                    Text(plan).font(.system(size: 15, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.8)
+                    heading("AI Credits · " + (credits.map(String.init) ?? "—"))
+                    Spacer(minLength: 4)
+                    heading(useG1Credits == true ? "超额自动使用 Credits" : "额度 · CLI 状态栏同步")
+                    heading("历史 · 本机三端记录")
+                }.frame(maxHeight: .infinity, alignment: .topLeading)
+            }.help("覆盖本机 Antigravity 2.0、IDE 与 CLI 记录；AI Credits 与订阅配额分开统计。")
         }
     }
     private func codexAccountCard(planName: String, balance: String?, resetCount: Int?) -> some View {
@@ -253,23 +316,56 @@ struct IslandUsageTrendCard: View, IslandUsageFormatting {
     @Binding var hoveredCost: Date?
     @Binding var hoveredActivity: Int?
     private var chart: IslandUsagePresentation.Cost { presentation.cost }
+    private static let monthFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMM")
+        return formatter
+    }()
+    private static let abbreviatedDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter
+    }()
+
     var body: some View {
         surface(verticalPadding: 8) {
             VStack(spacing: 8) {
                 costCard.zIndex(hoveredCost == nil ? 0 : 1)
                 Divider().overlay(FloatingSurfaceTheme.separator())
-                activityCard.zIndex(hoveredActivity == nil ? 0 : 1)
+                IslandUsageHeatmapCard(
+                    activity: presentation.activity,
+                    lifetimeTokens: presentation.lifetimeTokens,
+                    activityHelp: presentation.activityHelp,
+                    width: width,
+                    endingAt: max(now, presentation.activity.last?.date ?? now),
+                    generation: generation,
+                    countStyle: countStyle,
+                    mode: $mode,
+                    selectedActivity: $selectedActivity,
+                    hoveredActivity: $hoveredActivity
+                )
+                .zIndex(hoveredActivity == nil ? 0 : 1)
             }
         }
+        .onChange(of: width) { _ in hoveredCost = nil; hoveredActivity = nil }
+        .onDisappear { hoveredCost = nil; hoveredActivity = nil }
     }
     private var contentWidth: CGFloat { width - 56 }
-    private var activityPlotWidth: CGFloat { max(contentWidth - 28, 53 * 10 + 52 * 3) }
-    private var cellSize: CGFloat { IslandDashboardHeatmap.cellSize(width: activityPlotWidth) }
     private var costCellSize: CGFloat { max(8, IslandDashboardHeatmap.cellSize(width: contentWidth - 28)) }
     private var costPlotWidth: CGFloat { CGFloat(chart.days.count) * costCellSize + CGFloat(max(0, chart.days.count - 1)) * 3 }
     private var costViewport: CGFloat { min(costPlotWidth, max(104, contentWidth - 28 - 208 - 28)) }
     private var summaryWidth: CGFloat { max(1, (contentWidth - 28 - costViewport - 28) / 2) }
     private var generation: String { "\(presentation.provider.rawValue)-\(presentation.supportsReset)-\(chart.days.last?.date.timeIntervalSinceReferenceDate ?? 0)" }
+
+    private func costDayIndex(at point: CGPoint, count: Int, cellWidth: CGFloat, height: CGFloat) -> Int? {
+        guard count > 0, point.x >= 0, point.y >= 0, point.y <= height else { return nil }
+        let stride = cellWidth + 3
+        let index = Int(point.x / stride)
+        guard (0..<count).contains(index), point.x - CGFloat(index) * stride <= cellWidth + 1.5 else { return nil }
+        return index
+    }
+
     private var costCard: some View {
         let chart = self.chart
         let selected = chart.days.first { $0.date == selectedCost }
@@ -281,24 +377,62 @@ struct IslandUsageTrendCard: View, IslandUsageFormatting {
                     heading(chart.note)
                 }.frame(width: summaryWidth, alignment: .leading)
                 DashboardRecentChartScroll(plotWidth: costPlotWidth, viewportWidth: costViewport, plotHeight: 58, resetID: generation) {
-                    HStack(alignment: .bottom, spacing: 3) {
-                        ForEach(chart.days) { day in
-                            Button { selectedCost = selectedCost == day.date ? nil : day.date } label: {
-                                RoundedRectangle(cornerRadius: 2)
-                                    .fill(day.cost == nil ? FloatingSurfaceTheme.track() : FloatingSurfaceTheme.costData().opacity(selectedCost == day.date || hoveredCost == day.date ? 1 : 0.35 + 0.4 * (day.cost ?? 0) / chart.maximum))
-                                    .frame(width: costCellSize, height: max(3, 58 * (day.cost ?? 0) / chart.maximum))
-                                    .frame(height: 58, alignment: .bottom).contentShape(Rectangle())
-                            }.buttonStyle(FloatingSurfaceButtonStyle())
-                                .onHover { inside in if inside { hoveredCost = day.date } else if hoveredCost == day.date { hoveredCost = nil } }
-                                .accessibilityLabel(day.date.formatted(date: .abbreviated, time: .omitted) + " " + money(day.cost))
-                                .anchorPreference(key: DashboardHoverAnchor.self, value: .bounds) { hoveredCost == day.date ? $0 : nil }
+                    Canvas { context, size in
+                        let track = GraphicsContext.Shading.color(FloatingSurfaceTheme.track())
+                        let baseColor = FloatingSurfaceTheme.costData()
+                        let stride = costCellSize + 3
+                        let maxCost = chart.maximum
+                        for (index, day) in chart.days.enumerated() {
+                            let x = CGFloat(index) * stride
+                            let barHeight = max(3, size.height * CGFloat((day.cost ?? 0) / maxCost))
+                            let rect = CGRect(x: x, y: size.height - barHeight, width: costCellSize, height: barHeight)
+                            let path = Path(roundedRect: rect, cornerRadius: 2)
+                            if let cost = day.cost {
+                                let highlighted = selectedCost == day.date || hoveredCost == day.date
+                                let opacity = highlighted ? 1.0 : (0.35 + 0.4 * cost / maxCost)
+                                context.fill(path, with: .color(baseColor.opacity(opacity)))
+                            } else {
+                                context.fill(path, with: track)
+                            }
                         }
                     }
+                    .frame(width: costPlotWidth, height: 58)
+                    .contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let point):
+                            let next = costDayIndex(at: point, count: chart.days.count, cellWidth: costCellSize, height: 58)
+                                .map { chart.days[$0].date }
+                            if hoveredCost != next { hoveredCost = next }
+                        case .ended:
+                            if hoveredCost != nil { hoveredCost = nil }
+                        }
+                    }
+                    .gesture(
+                        SpatialTapGesture().onEnded { event in
+                            if let index = costDayIndex(at: event.location, count: chart.days.count, cellWidth: costCellSize, height: 58) {
+                                let date = chart.days[index].date
+                                selectedCost = selectedCost == date ? nil : date
+                            }
+                        }
+                    )
+                    .overlay(alignment: .topLeading) {
+                        if let hoveredCost, let index = chart.days.firstIndex(where: { $0.date == hoveredCost }) {
+                            Color.clear
+                                .frame(width: costCellSize, height: 58)
+                                .offset(x: CGFloat(index) * (costCellSize + 3), y: 0)
+                                .anchorPreference(key: DashboardHoverAnchor.self, value: .bounds) { $0 }
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(chart.title)
+                    .accessibilityValue((chart.totalIsLowerBound && chart.total != nil ? "≥" : "") + money(chart.total))
                 }
                 .overlayPreferenceValue(DashboardHoverAnchor.self) { anchor in
                     if let day = chart.days.first(where: { $0.date == hoveredCost }) {
-                        tooltip(anchor: anchor, height: 78) {
-                            Text(day.date.formatted(date: .abbreviated, time: .omitted))
+                        IslandUsageChartTooltip(anchor: anchor, height: 78) {
+                            Text(Self.abbreviatedDateFormatter.string(from: day.date))
                             Text(day.cost == nil ? chart.missingLabel(for: day) : money(day.cost) + " · 估算值")
                             Text(tokens(day.tokens) + " Tokens")
                         }
@@ -314,83 +448,204 @@ struct IslandUsageTrendCard: View, IslandUsageFormatting {
         .help(chart.helpText)
         .accessibilityHint(chart.accessibilityHint)
     }
-    private var activityCard: some View {
-        let grid = IslandDashboardHeatmap(activity: presentation.activity,
-            endingAt: max(now, presentation.activity.last?.date ?? now), mode: mode,
-            lifetimeTokens: presentation.lifetimeTokens)
-        return Group {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 4) {
-                    heading("Token 活动")
-                    if let selectedActivity { heading(selectedActivity).lineLimit(1) }
-                    Spacer(minLength: 8)
-                    ForEach(IslandDashboardHeatmap.Mode.allCases, id: \.self) { option in
-                        Button { mode = option; selectedActivity = nil; hoveredActivity = nil } label: {
-                            Text(option == .daily ? "每天" : option == .weekly ? "每周" : "累计")
-                                .font(.system(size: 10, weight: .medium)).padding(.horizontal, 8).padding(.vertical, 4)
-                                .islandGlass(Capsule(), tint: mode == option ? FloatingSurfaceTheme.accent().opacity(0.20) : .black.opacity(0.28))
-                        }.buttonStyle(FloatingSurfaceButtonStyle()).accessibilityValue(mode == option ? "已选择" : "未选择")
-                    }
+
+    fileprivate static func monthTitle(for date: Date) -> String {
+        monthFormatter.string(from: date)
+    }
+
+    fileprivate static func dateTitle(for date: Date) -> String {
+        abbreviatedDateFormatter.string(from: date)
+    }
+}
+
+private struct IslandUsageHeatmapCard: View, IslandUsageFormatting {
+    let activity: [DailyTokenActivity]
+    let lifetimeTokens: Int?
+    let activityHelp: String
+    let width: CGFloat
+    let endingAt: Date
+    let generation: String
+    let countStyle: String
+    @Binding var mode: IslandDashboardHeatmap.Mode
+    @Binding var selectedActivity: String?
+    @Binding var hoveredActivity: Int?
+
+    private var contentWidth: CGFloat { width - 56 }
+    private var activityPlotWidth: CGFloat { max(contentWidth - 28, 53 * 10 + 52 * 3) }
+    private var cellSize: CGFloat { IslandDashboardHeatmap.cellSize(width: activityPlotWidth) }
+
+    var body: some View {
+        let grid = IslandDashboardHeatmap(
+            activity: activity,
+            endingAt: endingAt,
+            mode: mode,
+            lifetimeTokens: lifetimeTokens
+        )
+        IslandUsageHeatmapContentView(
+            grid: grid,
+            activityHelp: activityHelp,
+            viewportWidth: contentWidth - 28,
+            activityPlotWidth: activityPlotWidth,
+            cellSize: cellSize,
+            generation: generation,
+            countStyle: countStyle,
+            mode: $mode,
+            selectedActivity: $selectedActivity,
+            hoveredActivity: $hoveredActivity
+        )
+    }
+}
+
+private struct IslandUsageHeatmapContentView: View, IslandUsageFormatting {
+    let grid: IslandDashboardHeatmap
+    let activityHelp: String
+    let viewportWidth: CGFloat
+    let activityPlotWidth: CGFloat
+    let cellSize: CGFloat
+    let generation: String
+    let countStyle: String
+    @Binding var mode: IslandDashboardHeatmap.Mode
+    @Binding var selectedActivity: String?
+    @Binding var hoveredActivity: Int?
+
+    private var rowsHeight: CGFloat { cellSize * 7 + 18 }
+
+    private func cellHitIndex(at point: CGPoint) -> Int? {
+        guard point.x >= 0, point.y >= 0, point.y <= rowsHeight else { return nil }
+        let stride = cellSize + 3
+        let column = Int(point.x / stride)
+        let row = Int(point.y / stride)
+        guard (0..<53).contains(column), (0..<7).contains(row),
+              point.x - CGFloat(column) * stride <= cellSize + 1.5,
+              point.y - CGFloat(row) * stride <= cellSize + 1.5 else { return nil }
+        let index = grid.cellIndex(column: column, row: row)
+        guard grid.cells.indices.contains(index), !grid.cells[index].future else { return nil }
+        return index
+    }
+
+    var body: some View {
+        let _ = countStyle
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 4) {
+                heading("Token 活动")
+                if let selectedActivity { heading(selectedActivity).lineLimit(1) }
+                Spacer(minLength: 8)
+                ForEach(IslandDashboardHeatmap.Mode.allCases, id: \.self) { option in
+                    Button { mode = option; selectedActivity = nil; hoveredActivity = nil } label: {
+                        Text(option == .daily ? "每天" : option == .weekly ? "每周" : "累计")
+                            .font(.system(size: 10, weight: .medium)).padding(.horizontal, 8).padding(.vertical, 4)
+                            .islandGlass(Capsule(), tint: mode == option ? FloatingSurfaceTheme.accent().opacity(0.20) : .black.opacity(0.28))
+                            .contentShape(Capsule())
+                    }.buttonStyle(FloatingSurfaceButtonStyle()).accessibilityValue(mode == option ? "已选择" : "未选择")
                 }
-                DashboardRecentChartScroll(plotWidth: activityPlotWidth, viewportWidth: contentWidth - 28,
-                    plotHeight: IslandDashboardHeatmap.chartHeight(width: activityPlotWidth), resetID: generation + "-\(mode)") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(alignment: .top, spacing: 3) {
-                            ForEach(0..<53, id: \.self) { column in
-                                VStack(spacing: 3) {
-                                    ForEach(0..<7, id: \.self) { row in
-                                        let index = grid.cellIndex(column: column, row: row)
-                                        let cell = grid.cells[index]
-                                        let filled = mode == .daily || grid.isFilled(column: column, row: row)
-                                        let label = cell.date.formatted(date: .abbreviated, time: .omitted) + " · " + tokens(cell.tokens)
-                                        Button { selectedActivity = label } label: {
-                                            RoundedRectangle(cornerRadius: 2)
-                                                .fill(filled ? heatColor(cell.tokens, maximum: grid.maximum) : FloatingSurfaceTheme.track())
-                                                .overlay { if hoveredActivity == index { RoundedRectangle(cornerRadius: 2).strokeBorder(FloatingSurfaceTheme.usageData(), lineWidth: 1) } }
-                                                .frame(width: cellSize, height: cellSize).opacity(cell.future ? 0.25 : 1)
-                                        }.buttonStyle(FloatingSurfaceButtonStyle()).disabled(cell.future).accessibilityLabel(label)
-                                            .onHover { inside in if inside { hoveredActivity = index } else if hoveredActivity == index { hoveredActivity = nil } }
-                                            .anchorPreference(key: DashboardHoverAnchor.self, value: .bounds) { hoveredActivity == index && (mode == .daily || row == 0) ? $0 : nil }
-                                            .accessibilityRepresentation {
-                                                Button(label) { selectedActivity = label }.disabled(cell.future)
-                                            }
-                                    }
+            }
+            DashboardRecentChartScroll(
+                plotWidth: activityPlotWidth,
+                viewportWidth: viewportWidth,
+                plotHeight: IslandDashboardHeatmap.chartHeight(width: activityPlotWidth),
+                resetID: generation + "-\(mode)"
+            ) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Canvas { context, _ in
+                        let track = GraphicsContext.Shading.color(FloatingSurfaceTheme.track())
+                        let futureTrack = GraphicsContext.Shading.color(FloatingSurfaceTheme.track().opacity(0.25))
+                        let base = FloatingSurfaceTheme.usageData()
+                        let shade1 = GraphicsContext.Shading.color(base.opacity(0.25))
+                        let shade2 = GraphicsContext.Shading.color(base.opacity(0.45))
+                        let shade3 = GraphicsContext.Shading.color(base.opacity(0.65))
+                        let shade4 = GraphicsContext.Shading.color(base.opacity(0.90))
+                        let hoverStroke = GraphicsContext.Shading.color(base)
+                        let stride = cellSize + 3
+                        let maxVal = Double(max(1, grid.maximum))
+
+                        for column in 0..<53 {
+                            let x = CGFloat(column) * stride
+                            for row in 0..<7 {
+                                let index = grid.cellIndex(column: column, row: row)
+                                let cell = grid.cells[index]
+                                let y = CGFloat(row) * stride
+                                let rect = CGRect(x: x, y: y, width: cellSize, height: cellSize)
+                                let path = Path(roundedRect: rect, cornerRadius: 2)
+                                if cell.future {
+                                    context.fill(path, with: futureTrack)
+                                    continue
+                                }
+                                let filled = grid.mode == .daily || grid.isFilled(column: column, row: row)
+                                if filled, let value = cell.tokens, value > 0 {
+                                    let level = Double(value) / maxVal
+                                    let shading = level < 0.25 ? shade1 : (level < 0.5 ? shade2 : (level < 0.75 ? shade3 : shade4))
+                                    context.fill(path, with: shading)
+                                } else {
+                                    context.fill(path, with: track)
+                                }
+                                if hoveredActivity == index {
+                                    context.stroke(Path(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), cornerRadius: 1.5), with: hoverStroke, lineWidth: 1)
                                 }
                             }
                         }
-                        ZStack(alignment: .leading) {
-                            ForEach(grid.months.indices, id: \.self) { index in
-                                Text(grid.months[index].date.formatted(.dateTime.month(.abbreviated)))
-                                    .font(FloatingSurfaceTypography.fine).foregroundStyle(secondary)
-                                    .offset(x: CGFloat(grid.months[index].column) * (cellSize + 3))
-                            }
-                        }.frame(width: activityPlotWidth, height: 12, alignment: .leading)
                     }
-                }
-                .overlayPreferenceValue(DashboardHoverAnchor.self) { anchor in
-                    if let index = hoveredActivity, grid.cells.indices.contains(index) {
-                        tooltip(anchor: anchor, height: 58) {
-                            Text(grid.cells[index].date.formatted(date: .abbreviated, time: .omitted))
-                            Text(tokens(grid.cells[index].tokens) + " Tokens")
+                    .frame(width: activityPlotWidth, height: rowsHeight)
+                    .contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let point):
+                            let next = cellHitIndex(at: point)
+                            if hoveredActivity != next { hoveredActivity = next }
+                        case .ended:
+                            if hoveredActivity != nil { hoveredActivity = nil }
                         }
+                    }
+                    .gesture(
+                        SpatialTapGesture().onEnded { event in
+                            if let index = cellHitIndex(at: event.location) {
+                                let cell = grid.cells[index]
+                                selectedActivity = IslandUsageTrendCard.dateTitle(for: cell.date) + " · " + tokens(cell.tokens)
+                            }
+                        }
+                    )
+                    .overlay(alignment: .topLeading) {
+                        if let index = hoveredActivity, grid.cells.indices.contains(index) {
+                            let anchorColumn = grid.mode == .daily ? index / 7 : index
+                            let anchorRow = grid.mode == .daily ? index % 7 : 0
+                            Color.clear
+                                .frame(width: cellSize, height: cellSize)
+                                .offset(x: CGFloat(anchorColumn) * (cellSize + 3), y: CGFloat(anchorRow) * (cellSize + 3))
+                                .anchorPreference(key: DashboardHoverAnchor.self, value: .bounds) { $0 }
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Token 活动热力图")
+                    .accessibilityValue(selectedActivity ?? "峰值 " + tokens(grid.maximum))
+
+                    ZStack(alignment: .leading) {
+                        ForEach(grid.months.indices, id: \.self) { index in
+                            Text(IslandUsageTrendCard.monthTitle(for: grid.months[index].date))
+                                .font(FloatingSurfaceTypography.fine).foregroundStyle(secondary)
+                                .offset(x: CGFloat(grid.months[index].column) * (cellSize + 3))
+                        }
+                    }.frame(width: activityPlotWidth, height: 12, alignment: .leading)
+                }
+            }
+            .overlayPreferenceValue(DashboardHoverAnchor.self) { anchor in
+                if let index = hoveredActivity, grid.cells.indices.contains(index) {
+                    IslandUsageChartTooltip(anchor: anchor, height: 58) {
+                        Text(IslandUsageTrendCard.dateTitle(for: grid.cells[index].date))
+                        Text(tokens(grid.cells[index].tokens) + " Tokens")
                     }
                 }
             }
         }
-        .help(presentation.activityHelp)
-        .onChange(of: width) { _ in hoveredCost = nil; hoveredActivity = nil }
-        .onDisappear { hoveredCost = nil; hoveredActivity = nil }
+        .help(activityHelp)
     }
-    private func heatColor(_ value: Int?, maximum: Int) -> Color {
-        guard let value, value > 0 else { return FloatingSurfaceTheme.track() }
-        let level = Double(value) / Double(max(1, maximum))
-        if level < 0.25 { return FloatingSurfaceTheme.usageData().opacity(0.25) }
-        if level < 0.5 { return FloatingSurfaceTheme.usageData().opacity(0.45) }
-        if level < 0.75 { return FloatingSurfaceTheme.usageData().opacity(0.65) }
-        return FloatingSurfaceTheme.usageData().opacity(0.90)
-    }
-    // Resolve the upstream anchor outside the scroll clip so edge cells retain a readable tooltip.
-    private func tooltip<Content: View>(anchor: Anchor<CGRect>?, height: CGFloat, @ViewBuilder content: @escaping () -> Content) -> some View {
+}
+
+private struct IslandUsageChartTooltip<Content: View>: View {
+    let anchor: Anchor<CGRect>?
+    let height: CGFloat
+    @ViewBuilder let content: () -> Content
+    var body: some View {
+        // Resolve the upstream anchor outside the scroll clip so edge cells retain a readable tooltip.
         GeometryReader { proxy in
             if let anchor {
                 let rect = proxy[anchor]

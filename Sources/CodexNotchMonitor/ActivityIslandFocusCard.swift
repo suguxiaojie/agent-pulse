@@ -184,6 +184,11 @@ struct ActivityIslandFocusCard: View {
 
     /// "gpt-6.1-sol" + "high" reads "GPT-6.1 Sol · High"; other model families keep the shared title.
     static func modelDisplayTitle(_ row: ActivitySessionSnapshot) -> String {
+        if row.provider == "Antigravity" {
+            let formatted = AntigravityPricing.formatModel(row.modelName, explicitEffort: row.reasoningEffort)
+            let result = [formatted.model, formatted.effort].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+            if !result.isEmpty { return result }
+        }
         guard let name = row.modelName?.trimmingCharacters(in: .whitespacesAndNewlines), name.lowercased().hasPrefix("gpt-") else {
             return row.modelDetailsTitle
         }
@@ -193,8 +198,12 @@ struct ActivityIslandFocusCard: View {
     }
 
     private var metadataLine: some View {
-        HStack(spacing: 8) {
-            Text((row.provider == "Codex" ? "" : row.provider == "Grok CLI" ? "Grok · " : "Claude · ") + (row.isPrivate ? "模型已隐藏" : Self.modelDisplayTitle(row))).lineLimit(1).truncationMode(.tail)
+        let prefix = row.provider == "Codex" ? ""
+            : row.provider == "Grok CLI" ? "Grok · "
+            : row.provider == "Antigravity" ? "Antigravity · "
+            : "Claude · "
+        return HStack(spacing: 8) {
+            Text(prefix + (row.isPrivate ? "模型已隐藏" : Self.modelDisplayTitle(row))).lineLimit(1).truncationMode(.tail)
                 .help(presentation.modelTitle)
             if !row.fastModeTitle.isEmpty {
                 Text(row.fastModeTitle).fixedSize().help("当前会话已开启 Fast 模式")

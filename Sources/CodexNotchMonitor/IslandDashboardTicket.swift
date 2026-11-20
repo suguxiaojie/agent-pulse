@@ -9,8 +9,12 @@ struct DashboardResetTicket: View {
     @State private var hovered = false
     private var scale: CGFloat { size.height / 32 }
     private var motion: CGSize { reduceMotion ? .zero : tilt }
+    @MainActor private static var assetCache: [String: NSImage] = [:]
     private func asset(_ name: String) -> NSImage {
-        Bundle.main.url(forResource: name, withExtension: "svg").flatMap(NSImage.init(contentsOf:)) ?? NSImage()
+        if let cached = Self.assetCache[name] { return cached }
+        let loaded = Bundle.main.url(forResource: name, withExtension: "svg").flatMap(NSImage.init(contentsOf:)) ?? NSImage()
+        Self.assetCache[name] = loaded
+        return loaded
     }
     var body: some View {
         ZStack {

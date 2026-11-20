@@ -14,7 +14,12 @@ struct ActivityIslandSnapshot: Equatable {
 
 }
 
-enum IslandUsageProvider: String, CaseIterable { case codex = "Codex", claude = "Claude Code", grok = "Grok CLI" }
+enum IslandUsageProvider: String, CaseIterable {
+    case codex = "Codex"
+    case claude = "Claude Code"
+    case grok = "Grok CLI"
+    case antigravity = "Antigravity"
+}
 
 @MainActor
 final class ActivityIslandViewModel: ObservableObject {
@@ -82,9 +87,15 @@ final class ActivityIslandViewModel: ObservableObject {
     @Published var grokUsage: GrokUsageSummary?
     @Published var grokQuotaFailed = false
     @Published var grokQuotaStatus = "尚未查询"
+    @Published var antigravityEnabled = false
+    @Published var antigravityStatusLineEnabled = false
+    @Published var antigravityQuota: AntigravityQuotaSnapshot?
+    @Published var antigravityUsage: AntigravityUsageSummary?
     func selectUsageProvider(_ provider: IslandUsageProvider) {
-        guard !resetBusy, !resetConfirmationPresented, provider != .claude || claudeEnabled,
-              provider != .grok || grokEnabled else { return }
+        guard !resetBusy, !resetConfirmationPresented,
+              provider != .claude || claudeEnabled,
+              provider != .grok || grokEnabled,
+              provider != .antigravity || antigravityEnabled else { return }
         usageProvider = provider
     }
     func updateClaudeEnabled(_ enabled: Bool) {
@@ -95,7 +106,7 @@ final class ActivityIslandViewModel: ObservableObject {
         }
     }
     @Published var showsUsagePage = false
-    var usagePageHeight: CGFloat = 580
+    var usagePageHeight: CGFloat = 634
     @Published var usageCost: CostSnapshot = .empty
     @Published var accountUsage: AccountUsageSnapshot?
     @Published var resetCredits: QuotaResetCreditSummary?
@@ -691,6 +702,7 @@ struct ActivityIslandExpandedList: View {
                     }
                     .padding(.horizontal, 8).frame(height: 24)
                     .islandGlass(Capsule(), tint: FloatingSurfaceTheme.chipFill())
+                    .contentShape(Capsule())
                 }.buttonStyle(FloatingSurfaceButtonStyle())
                     .help("查看额度与用量")
                     .accessibilityLabel("查看额度与用量").accessibilityValue(quotaTitle)

@@ -73,7 +73,7 @@ final class QuotaResetNotifier: NSObject, UNUserNotificationCenterDelegate {
 
     func sendTestNotification(completion: @escaping (Bool) -> Void) {
         let content = UNMutableNotificationContent()
-        content.title = "Codex Pulse 测试通知"
+        content.title = "Agent Pulse 测试通知"
         content.body = "通知已就绪，额度恢复与关注信号会这样提醒你。"
         content.categoryIdentifier = "QUOTA_RECOVERY"
         content.sound = .default
@@ -112,7 +112,7 @@ final class QuotaResetNotifier: NSObject, UNUserNotificationCenterDelegate {
         releaseURL: String
     ) {
         let content = UNMutableNotificationContent()
-        content.title = "Codex Pulse v\(version) 可用"
+        content.title = "Agent Pulse v\(version) 可用"
         content.body = architecture.map { "已找到适用于 \($0) 的安装包。" }
             ?? "新版本已经可以下载。"
         content.sound = .default

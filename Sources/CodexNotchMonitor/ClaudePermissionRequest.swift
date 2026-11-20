@@ -59,8 +59,8 @@ struct ClaudePermissionRequest: Identifiable {
             suggestions: suggestions, questions: questions)
     }
     func decision(_ choice: Choice, answers: [String: String] = [:]) -> [String: Any]? {
-        if choice == .deny { return ["behavior": "deny", "message": "The user declined this request in Codex Pulse."] }
-        if choice == .cancel { return ["behavior": "deny", "message": "The user cancelled this request in Codex Pulse.", "interrupt": true] }
+        if choice == .deny { return ["behavior": "deny", "message": "The user declined this request in Agent Pulse."] }
+        if choice == .cancel { return ["behavior": "deny", "message": "The user cancelled this request in Agent Pulse.", "interrupt": true] }
         if !questions.isEmpty {
             guard choice == .once, permitsIslandAnswers(answers) else { return nil }
             var updated = input; updated["answers"] = answers.mapValues { $0.trimmingCharacters(in: .whitespacesAndNewlines) }

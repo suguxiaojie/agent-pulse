@@ -1,20 +1,20 @@
 <div align="center">
 
-<img src="Resources/Pulse-Logo.svg" alt="Codex Pulse logo" width="72">
+<img src="Resources/Pulse-Logo.svg" alt="Agent Pulse logo" width="72">
 
-# Codex Pulse
+# Agent Pulse
 
-**Quotas, tasks, and local usage for Codex, Claude Code, and Grok CLI, from the menu bar and the notch.**
+**Quotas, tasks, and local usage for Codex, Claude Code, Grok CLI, and Google Antigravity, from the menu bar and the notch.**
 
-[简体中文](README.md) · [Download v1.12.0](https://github.com/suguxiaojie/codex-pulse/releases/tag/v1.12.0) · [MIT License](LICENSE)
+[简体中文](README.md) · [Download v2.0.0](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.0.0) · [MIT License](LICENSE)
 
 macOS 13+ · Native SwiftUI / AppKit · Apple Silicon / Intel
 
 </div>
 
-Codex Pulse is a native macOS menu bar app. Official quotas come from the local Codex App Server, the Claude status line, and the official xAI `grok` CLI. Tasks come from desktop IPC, a dedicated Hook, or local records checked against a live process. Pulse does not read account credentials.
+Agent Pulse is a native macOS menu bar app. Official quotas come from the local Codex App Server, the Claude status line, the official xAI `grok` CLI, and Google Antigravity's `agy` status line. Tasks come from desktop IPC, a dedicated Hook, or local records checked against a live process. Pulse does not read account credentials.
 
-**v1.12.0 (Build 34)** brings all three into the same interface: a Dynamic Island in the notch, a glass menu bar panel, and Monitor Center.
+**v2.0.0 (Build 35)** brings all four into the same interface: a Dynamic Island in the notch, a glass menu bar panel, and Monitor Center.
 
 ## Dynamic Island
 
@@ -30,9 +30,9 @@ The quota at the upper left opens usage on the island. Codex, Claude Code, and G
   <img src="docs/images/pulse-island-usage.png" alt="Dynamic Island usage: Grok CLI at 91% weekly remaining, SuperGrok Plus, shared pool, prepaid balance, and local tokens" width="42%">
 </p>
 
-- The shell matches the notch, with concave top corners and a thin edge light that follows task state. Codex tasks use a terminal mark, Claude Code uses Clawd, and Grok CLI uses the Grok Bot.
+- The shell matches the notch, with concave top corners and a thin edge light that follows task state. Codex tasks use a terminal mark, Claude Code uses Clawd, Grok CLI uses the Grok Bot, and Google Antigravity uses the levitating star-core mascot.
 - A new approval or question takes focus. You can pick an option, select several, or type an answer. A Grok tool request can be allowed once or rejected once, using the original option IDs, with no lasting grant. Anything else returns to the original client. Nothing is approved automatically.
-- One Native questions are read from the shared Codex daemon that is already running. An answer is limited to the current active turn. Finished turns go back to the original client. See [One Native boundaries](docs/one-native-questions.md).
+- Native asynchronous questions are read from terminal-scoped App Servers created by new managed OneNative Codex launches, or from an existing shared daemon, without selecting a folder. Answers are restricted to the current active turn; finished turns go back to the original client. Existing standalone `--no-daemon` processes keep their original mode and are not migrated. See [OneNative boundaries](docs/one-native-questions.md).
 - "Fast" appears only when that session explicitly enabled it. Missing evidence stays blank; a global default is not treated as session evidence.
 - Completed tasks can play a sound and one of three confetti levels: light, standard, or full. Reduce Motion holds progress effects and confetti still.
 - Followed signals, quota recovery, and reset-card reminders at 24, 12, and 6 hours before expiry use both a system notification and an island card. While the app is quit, missed reminders are not replayed; reopening delivers only the most urgent one.
@@ -77,6 +77,7 @@ Usage, cost, community updates, sessions, and both coding-agent connections shar
 - Deleting a project can remove the sessions only, or move that project's independent folder and everything in it to the Trash. Moving the folder requires a unique registration, the original working directory, and the folder name typed back. Shared directories, nested projects, symlinks, and mismatched paths keep the session-only delete.
 - **Claude Code** is off by default. Turning it on backs up `settings.json` first and edits only Pulse's own entries. Turning it off restores the previous status line and leaves other tools alone. The island shows the current turn's public progress and real tool steps, including a Bash command description. After the monitor restarts, only sessions still marked busy in Claude's local registry come back.
 - **Grok CLI** is off by default. While it is on, a short-lived official CLI query checks the remaining quota every minute, and you can refresh immediately. Transient upstream or network failures retry briefly inside a fixed time limit. A lasting failure keeps the previous observation clearly marked. After the period actually ends, the old percentage is hidden. Context length is never shown as subscription quota. A live task has to match a process. Idle terminals and old completions do not announce again.
+- **Google Antigravity** is off by default. Turning it on aggregates local transcripts across Antigravity 2.0 Desktop, Antigravity IDE, and the `agy` CLI, separating AI Credits from multi-pool model quotas and marking internal codename models as unpriced lower bounds (`≥`). Optional lifecycle hooks (`~/.gemini/config/hooks.json`, without `PreToolUse` or auto-approval) and `agy` status-line forwarding back up existing files first and restore them cleanly when turned off. See [Google Antigravity integration](docs/antigravity-integration.md).
 
 Automatic integration, only after you turn Grok on, manages the official shared-startup switch `cli.use_leader` and backs up the previous value first. Then run `grok` as usual. Pulse recognizes the session and project. It does not ask you to pick a folder or open a terminal. A standalone task that is already running stays where it is. A disconnect does not cancel the original request, and an unclear result is not sent again. Stopping Pulse monitoring leaves the switch as it is; the backup is there if you want the old value back. See [Grok CLI integration](docs/grok-cli-integration.md) and [island question boundaries](docs/grok-island-questions.md).
 
@@ -102,12 +103,12 @@ The island at the top of Settings is the production component drawing a sample, 
 
 ## Download and install
 
-Download the build for this Mac from [GitHub Releases](https://github.com/suguxiaojie/codex-pulse/releases/tag/v1.12.0):
+Download the build for this Mac from [GitHub Releases](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.0.0):
 
 | Mac processor | Installer |
 |---|---|
-| Apple Silicon (M series) | [arm64 DMG](https://github.com/suguxiaojie/codex-pulse/releases/download/v1.12.0/CodexNotchMonitor-v1.12.0-arm64.dmg) |
-| Intel | [x86_64 DMG](https://github.com/suguxiaojie/codex-pulse/releases/download/v1.12.0/CodexNotchMonitor-v1.12.0-x86_64.dmg) |
+| Apple Silicon (M series) | [arm64 DMG](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.0.0/CodexNotchMonitor-v2.0.0-arm64.dmg) |
+| Intel | [x86_64 DMG](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.0.0/CodexNotchMonitor-v2.0.0-x86_64.dmg) |
 
 1. Open the DMG and drag the app into Applications.
 2. Launch it. Codex quota needs a signed-in Codex or ChatGPT Desktop on this Mac.
@@ -115,21 +116,22 @@ Download the build for this Mac from [GitHub Releases](https://github.com/suguxi
 
 The installer is ad-hoc signed and not notarized by Apple. If macOS blocks the first launch, confirm where the file came from, then allow it in System Settings → Privacy & Security.
 
-The app was renamed from Codex Monitor. Its bundle ID, `CodexNotchMonitor.app` filename, preferences, and data directories keep their previous values, so an upgrade leaves settings and data in place. Check for Updates only opens the download page. You install the update yourself.
+The app was renamed to **Agent Pulse** (previously Codex Pulse / Codex Monitor). Its bundle ID, `CodexNotchMonitor.app` filename, preferences, and data directories keep their previous values, so an upgrade leaves settings and data in place. Check for Updates only opens the download page. You install the update yourself.
 
 ## Where the data comes from
 
 | Content | Source |
 |---|---|
 | Codex official quota and account | Local Codex App Server. The figure is a quota percentage and a reset time, not a remaining message count |
+| Claude / Grok / Antigravity quotas | Claude status line, official `grok` `_x.ai/billing`, and Antigravity `agy` status line (Gemini and partner pools shown separately from AI Credits) |
 | Quota forecast | Estimated from the used percentage and elapsed time in the current window. The first hour of a cycle has no forecast |
 | Tokens and project stats | Structured session logs still readable on this Mac, including cache |
-| Live tasks | Codex uses desktop IPC and local logs. Claude Code uses its dedicated Hook and local registry. Grok CLI uses local updates matched to a process |
-| Cost | Codex and Claude use tokens times public prices. Grok uses the cost reported by the CLI for that turn. None of these are subscription bills. Unknown amounts are labeled |
+| Live tasks | Codex uses desktop IPC and local logs. Claude Code uses its dedicated Hook and local registry. Grok CLI uses local shared sockets matched to a process. Antigravity covers 2.0 Desktop, IDE, and CLI transcripts, presence locks, and lifecycle Hooks |
+| Cost | Codex, Claude, and Antigravity use tokens times published official rates. Grok uses the cost reported by the CLI for that turn. None of these are subscription bills. Unknown amounts are labeled |
 | Community posts and forecasts | Third-party aggregate [codex-reset.com](https://codex-reset.com/zh/tibo) |
 | Session account ownership | Only ownership Pulse actually observed. Sessions from before the baseline, or without enough evidence, stay Unassigned |
 
-- Pulse does not read `auth.json`, cookies, API keys, Claude credentials, or the Keychain. Local sessions, projects, and usage are not uploaded to the community source or the price catalog.
+- Pulse does not read `auth.json`, cookies, API keys, Claude/Antigravity credentials, emails, or the Keychain. Local sessions, projects, and usage are not uploaded to the community source or the price catalog.
 - Codex task monitoring installs no Hook and does not write Codex client configuration.
 - Import, restore, delete, migrate, and manual quota reset start only when you choose them, and the scope is shown first. A quota reset asks a second time.
 - Readable exports hide sensitive body text by default. Raw backups and migration packages can contain source, prompts, and attachments. Keep them yourself.
@@ -139,14 +141,14 @@ The app was renamed from Codex Monitor. Its bundle ID, `CodexNotchMonitor.app` f
 Requires the Swift 6 toolchain and macOS build tools. There are no third-party Swift Package dependencies.
 
 ```bash
-git clone https://github.com/suguxiaojie/codex-pulse.git
-cd codex-pulse
+git clone https://github.com/suguxiaojie/agent-pulse.git
+cd agent-pulse
 ./scripts/build-app.sh native        # Build for this Mac
 open build/CodexNotchMonitor.app
 ```
 
 ```bash
-./scripts/test.sh                    # Full tests, including Claude integration
+./scripts/test.sh                    # Full tests, including Claude, Grok, and Antigravity integration
 SKIP_COST_SMOKE_TESTS=1 ./scripts/test.sh
 ./scripts/build-dmg.sh arm64         # Apple Silicon installer
 ./scripts/build-dmg.sh x86_64        # Intel installer
@@ -157,6 +159,7 @@ More detail:
 - [In-island approvals](docs/island-approvals.md)
 - [Claude Code integration](docs/claude-code-integration.md)
 - [Grok CLI integration](docs/grok-cli-integration.md)
+- [Google Antigravity integration](docs/antigravity-integration.md)
 - [Compressed session history](docs/compressed-rollouts.md)
 - [Roadmap](ROADMAP.md)
 
@@ -164,6 +167,6 @@ More detail:
 
 Thanks to [Codex Island](https://github.com/ericjypark/codex-island), [QuotaView](https://github.com/Duoasa/QuotaView), and [Open Claude UI](https://github.com/Caho1/open-claude-ui). Third-party sources and full licenses are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-This project is licensed under the [MIT License](LICENSE), Copyright (c) 2026 CoverAI. Codex Pulse is an independent project and is not affiliated with OpenAI, Anthropic, or xAI.
+This project is licensed under the [MIT License](LICENSE), Copyright (c) 2026 CoverAI. Agent Pulse is an independent project and is not affiliated with OpenAI, Anthropic, xAI, or Google.
 
 Support the project: [CoverAI's top-up service](https://www.coverai.store/).

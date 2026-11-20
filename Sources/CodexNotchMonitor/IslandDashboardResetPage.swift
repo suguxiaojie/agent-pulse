@@ -16,6 +16,7 @@ struct IslandResetActionPolicy {
 struct IslandDashboardResetPage: View {
     @ObservedObject var model: ActivityIslandViewModel
     let hidesTicket: Bool
+    var isPageVisible = true
     let onHeightChange: (CGFloat) -> Void
     @State private var confirmsReset = false
     @State private var confirmedCredits: QuotaResetCreditSummary?
@@ -71,7 +72,7 @@ struct IslandDashboardResetPage: View {
                     Text("隐私模式已开启").font(FloatingSurfaceTypography.cardTitle).padding(.vertical, 20)
                 } else {
                     HStack(spacing: 18) {
-                        DashboardResetTicket(playbackEnabled: model.playbackVisible && !hidesTicket,
+                        DashboardResetTicket(playbackEnabled: model.playbackVisible && isPageVisible && !hidesTicket,
                             size: CGSize(width: 112, height: 67))
                             .opacity(hidesTicket ? 0 : 1)
                             .anchorPreference(key: DashboardResetTicketAnchors.self, value: .bounds) { [.reset: $0] }

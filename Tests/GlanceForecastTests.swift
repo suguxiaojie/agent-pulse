@@ -187,10 +187,12 @@ enum GlanceForecastTests {
         check(snapshot(.init(fiveHour: .init(usedPercent: 10, resetsAt: now), sevenDay: nil, capturedAt: now)).windows.isEmpty, "expired quota hidden")
         check(snapshot(.init(fiveHour: .init(usedPercent: .nan, resetsAt: future), sevenDay: nil, capturedAt: now)).windows.isEmpty, "invalid percentage hidden")
         check(snapshot(.init(fiveHour: five, sevenDay: nil, capturedAt: now.addingTimeInterval(61))).windows.isEmpty, "future observation hidden")
-        for saved in ["codex", "claude", "invalid"] {
+        for saved in ["codex", "claude", "antigravity", "invalid"] {
             check(GlanceProvider.resolve(saved, claudeEnabled: false) == .codex, "disabled provider fallback")
         }
         check(GlanceProvider.resolve("claude", claudeEnabled: true) == .claude, "saved Claude selected")
+        check(GlanceProvider.resolve("antigravity", claudeEnabled: true, antigravityEnabled: true) == .antigravity, "saved Antigravity selected")
+        check(GlanceProvider.resolve("antigravity", claudeEnabled: true, antigravityEnabled: false) == .codex, "disabled Antigravity fallback")
         check(GlanceProvider.resolve("invalid", claudeEnabled: true) == .codex, "invalid provider fallback")
         let day = ISO8601DateFormatter().date(from: "2026-10-21T00:00:00Z")!
         let previous = day.addingTimeInterval(-86_400)

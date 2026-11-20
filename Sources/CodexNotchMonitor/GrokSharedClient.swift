@@ -5,6 +5,7 @@ import Darwin
 final class GrokSharedClient: @unchecked Sendable {
     struct Snapshot: Equatable {
         var revision: UInt64 = 0
+        var connected = false
         var requests: [GrokQuestionRequest] = []
         var submitted: Set<String> = []
         var status = "等待下次正常启动 Grok，自动接入新请求"
@@ -167,7 +168,7 @@ final class GrokSharedClient: @unchecked Sendable {
         input = Data(); output = Data(); state.reset(); verified = []; queries = [:]; queriedAt = [:]
     }
     private func publish(_ status: String? = nil) {
-        var snapshot = Snapshot(revision: lastPublished.revision, requests: state.requests.values.filter { verified.contains($0.sessionID) }.sorted { $0.id < $1.id },
+        var snapshot = Snapshot(revision: lastPublished.revision, connected: ready, requests: state.requests.values.filter { verified.contains($0.sessionID) }.sorted { $0.id < $1.id },
             submitted: state.submitted, status: status ?? (ready ? "共享问答已连接 · 新请求自动接入" : "等待下次正常启动 Grok，自动接入新请求"))
         if snapshot != lastPublished { snapshot.revision &+= 1; lastPublished = snapshot; onSnapshot?(snapshot) }
     }

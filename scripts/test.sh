@@ -142,6 +142,8 @@ swiftc Sources/CodexNotchMonitor/FastTimestamp.swift Sources/CodexNotchMonitor/C
   Sources/CodexNotchMonitor/IslandUsagePresentation.swift \
   Sources/CodexNotchMonitor/GrokData.swift \
   Sources/CodexNotchMonitor/GrokPresentation.swift \
+  Sources/CodexNotchMonitor/AntigravityData.swift \
+  Sources/CodexNotchMonitor/AntigravityPresentation.swift \
   Sources/CodexNotchMonitor/IslandUsageSections.swift \
   Sources/CodexNotchMonitor/ClaudeCodePricing.swift \
   Sources/CodexNotchMonitor/ClaudeCodeTranscript.swift \
@@ -298,3 +300,4 @@ swiftc Sources/CodexNotchMonitor/FastTimestamp.swift -I Vendor/Zstd/include "$zs
 "$continuity_test_binary"
 
 zsh scripts/test-claude.sh
+zsh scripts/test-antigravity.sh

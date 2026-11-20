@@ -73,7 +73,7 @@ struct GlanceContentPreferences: Equatable {
         if showPrimaryQuota { modules.append(168 + CGFloat(max(0, primaryQuotaWindowCount - 1)) * 18) }
         // Includes the 32 pt text tabs, subtitle, 44 pt bars and summary.
         if showCostEstimate || showTokenActivity { modules.append(160) }
-        if provider == .claude || showCreditBalance || showDailyTokens || showThirtyDayTokens { modules.append(56) }
+        if provider == .claude || provider == .antigravity || provider == .grok || showCreditBalance || showDailyTokens || showThirtyDayTokens { modules.append(56) }
         if provider == .codex && showResetEntry { modules.append(34) }
         let reading = modules.reduce(0, +) + CGFloat(max(0, modules.count - 1)) * GlanceLayout.moduleSpacing
             + 2 * GlanceLayout.readingInset

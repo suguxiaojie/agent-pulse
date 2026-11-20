@@ -8,6 +8,27 @@ enum GrokLauncher {
     struct Outcome { let changed: Bool; let backupURL: URL? }
     enum Failure: Error, Equatable { case unreadable, unsupported, concurrentChange, write }
     static func sharedSocket(home: URL) -> URL { home.appendingPathComponent("leader.sock") }
+    /// Leader sockets of this account: the default one plus Grok's documented `leader-*.sock`
+    /// (OneNative gives each terminal launch its own). Same-user sockets only, never links.
+    static func sharedSockets(home: URL) -> [URL] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: home.path)) ?? []
+        return names.filter { $0 == "leader.sock" || ($0.hasPrefix("leader-") && $0.hasSuffix(".sock")) }
+            .sorted().prefix(32).compactMap { name in
+                let url = home.appendingPathComponent(name)
+                var info = stat()
+                guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFSOCK, info.st_uid == getuid() else { return nil }
+                return url
+            }
+    }
+    static func hasPreConfigurationProcess(registry: Data, verifiedSessions: Set<String>, configuredAt: Date) -> Bool {
+        guard !verifiedSessions.isEmpty,
+              let records = (try? JSONSerialization.jsonObject(with: registry)) as? [[String: Any]], records.count <= 256 else { return false }
+        return records.contains { record in
+            guard let id = record["session_id"] as? String, verifiedSessions.contains(id),
+                  let stamp = GrokJSON.number(record["pid_start"]), stamp > 0 else { return false }
+            return stamp / 1_000_000 < configuredAt.timeIntervalSince1970
+        }
+    }
 
     static func plan(_ original: Data?) throws -> Plan {
         guard let text = original.flatMap({ String(data: $0, encoding: .utf8) }) ?? (original == nil ? "" : nil),

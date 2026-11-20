@@ -8,14 +8,18 @@ struct ActivityIslandUsageDashboard: View {
     @State private var showsReset = false
     @State private var flightActive = false
     @State private var flightSerial: UInt64 = 0
-    @State private var usageHeight: CGFloat = 500
-    @State private var resetHeight: CGFloat = 500
+    @State private var usageHeight: CGFloat
+    @State private var resetHeight: CGFloat = 460
     @State private var now = Date()
     @State private var mode = IslandDashboardHeatmap.Mode.daily
     @State private var selectedCost: Date?
     @State private var selectedActivity: String?
     @State private var hoveredCost: Date?
     @State private var hoveredActivity: Int?
+    init(model: ActivityIslandViewModel) {
+        self.model = model
+        self._usageHeight = State(initialValue: max(420, model.usagePageHeight - 36))
+    }
     private var presentation: IslandUsagePresentation {
         switch model.usageProvider {
         case .codex: return .codex(quotaState: model.quotaState, accountUsage: model.accountUsage,
@@ -24,6 +28,8 @@ struct ActivityIslandUsageDashboard: View {
             statusLineEnabled: model.claudeStatusLineEnabled, now: now)
         case .grok: return .grok(usage: model.grokUsage, quota: model.grokQuota,
             failed: model.grokQuotaFailed, status: model.grokQuotaStatus, now: GrokDisplayClock.now(sampled: now))
+        case .antigravity: return .antigravity(usage: model.antigravityUsage, quota: model.antigravityQuota,
+            statusLineEnabled: model.antigravityStatusLineEnabled, now: now)
         }
     }
     private var width: CGFloat { model.metrics.expandedRect.width }
@@ -58,6 +64,7 @@ struct ActivityIslandUsageDashboard: View {
                 Button { if showsReset { navigateReset(false) } else { model.onBackToTasks?() } } label: {
                     Label(showsReset ? "返回用量" : "返回任务", systemImage: "chevron.left").font(FloatingSurfaceTypography.control)
                         .padding(.horizontal, 9).frame(height: 24).islandGlass(Capsule(), tint: FloatingSurfaceTheme.chipFill())
+                        .contentShape(Capsule())
                 }.buttonStyle(FloatingSurfaceButtonStyle())
                 Text(showsReset ? "额度重置" : "用量统计").font(FloatingSurfaceTypography.control).foregroundStyle(secondary)
                 Spacer()
@@ -67,6 +74,7 @@ struct ActivityIslandUsageDashboard: View {
     }
     private func usagePage(_ p: IslandUsagePresentation) -> some View {
             DashboardPageLayout(maximumHeight: model.metrics.maximumUsageHeight - 36,
+                initialContentHeight: max(360, usageHeight - 46),
                 onHeightChange: { usageHeight = $0; if !showsReset { model.onUsageHeightChange?($0 + 36) } }) {
                 VStack(spacing: 10) {
                     if model.privacyMode {
@@ -104,32 +112,37 @@ struct ActivityIslandUsageDashboard: View {
             }
     }
     private func pageFlow(_ p: IslandUsagePresentation) -> some View {
-        ZStack(alignment: .top) {
+        let needsResetSurface = p.supportsReset || showsReset || flightActive
+        return ZStack(alignment: .top) {
             usagePage(p).frame(width: width, height: usageHeight, alignment: .top)
                 .opacity(showsReset ? 0 : 1)
                 .allowsHitTesting(!showsReset && !flightActive).accessibilityHidden(showsReset)
                 .environment(\.islandGlassActive, !showsReset)
-            IslandDashboardResetPage(model: model, hidesTicket: flightActive) { height in
-                resetHeight = height
-                if showsReset { model.onUsageHeightChange?(height + 36) }
+            if needsResetSurface {
+                IslandDashboardResetPage(model: model, hidesTicket: flightActive, isPageVisible: showsReset) { height in
+                    resetHeight = height
+                    if showsReset { model.onUsageHeightChange?(height + 36) }
+                }
+                .frame(width: width, height: resetHeight, alignment: .top)
+                .opacity(showsReset ? 1 : 0)
+                .allowsHitTesting(showsReset && !flightActive).accessibilityHidden(!showsReset)
+                .environment(\.islandGlassActive, showsReset)
             }
-            .frame(width: width, height: resetHeight, alignment: .top)
-            .opacity(showsReset ? 1 : 0)
-            .allowsHitTesting(showsReset && !flightActive).accessibilityHidden(!showsReset)
-            .environment(\.islandGlassActive, showsReset)
         }
-        .frame(width: width, height: max(usageHeight, resetHeight), alignment: .top)
+        .frame(width: width, height: showsReset ? max(usageHeight, resetHeight) : usageHeight, alignment: .top)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: showsReset)
         .overlayPreferenceValue(DashboardResetTicketAnchors.self) { anchors in
-            GeometryReader { proxy in
-                DashboardResetTicketFlightView(serial: flightSerial, toReset: showsReset,
-                    active: flightActive && model.playbackVisible && !model.privacyMode,
-                    source: anchors[.usage].map { proxy[$0] } ?? .zero,
-                    destination: anchors[.reset].map { proxy[$0] } ?? .zero,
-                    reduceMotion: reduceMotion,
-                    onCompletion: { serial in if serial == flightSerial { flightActive = false } })
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .allowsHitTesting(false).accessibilityHidden(true)
+            if flightActive && model.playbackVisible && !model.privacyMode {
+                GeometryReader { proxy in
+                    DashboardResetTicketFlightView(serial: flightSerial, toReset: showsReset,
+                        active: true,
+                        source: anchors[.usage].map { proxy[$0] } ?? .zero,
+                        destination: anchors[.reset].map { proxy[$0] } ?? .zero,
+                        reduceMotion: reduceMotion,
+                        onCompletion: { serial in if serial == flightSerial { flightActive = false } })
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .allowsHitTesting(false).accessibilityHidden(true)
+                }
             }
         }
     }

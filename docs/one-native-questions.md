@@ -6,6 +6,12 @@
 
 Codex Pulse 使用原生 Swift 实现，只启动自己的 proxy 子进程，不启动或重启 daemon，不修改 One Native、Codex 配置、Hook、账号或历史会话文件。该通道也适用于使用同一默认 Codex home／daemon 的 CLI 会话；不是通过窗口名称判断来源。
 
+该接入不代表任意 OneNative Codex 终端都可接入。2026-11-01 本机排查确认：此前 OneNative 的适配器新建默认传入 `--no-daemon`，恢复时也仅在原线程已由共享 daemon 加载的情况下使用 `--remote`。现场独立 CLI PID 28052 确有 `--no-daemon`；默认 proxy 的控制 Socket 不存在，另一个现存 daemon 的 `thread/loaded/list` 返回空列表。该旧进程不会热迁移；切换到空 daemon、重启 Pulse 或从日志还原按钮均不能补上原请求的回答通道。
+
+用户授权联调后，OneNative 0.7.7 在消费受管启动凭证后，为其未来 Codex 启动建立终端独立 App Server，再由 TUI 经官方 `--remote unix://…` 连接；服务沿用同一启动环境与已有配置覆盖，不复制凭据、不修改账户配置、不恢复 Pulse Hook。guardian 保持为原 TUI 的子进程，TUI 退出后停止本次服务并清理自建目录；已有共享恢复及直接手动启动保持原路径。实现位于 OneNative 的 `native/codex_surface.py` 与 `cli_runtime/host_exec.py`。
+
+Pulse 的 `CodexSurfaceEndpoints.swift` 只读发现 `/private/tmp/one-native-codex-<UID>/surface-*/runtime.json`，拒绝非私有目录／文件、死进程、跨 UID、错误父子链及非同一 Codex 可执行文件。官方自定义 Socket 实际可能是指向私有哈希监听的链接；解析后复核目标权限及实际 peer PID／UID。端点身份包含进程启动时间与 Socket 身份，替换后创建新 epoch；只连接已有服务，不创建、恢复或开启轮次。不同端点的同一线程问题出现冲突时不显示，不把失效连接的请求路由到另一服务。回答仍使用下述带 `expectedTurnId` 的原生通道，不模拟终端输入。现场证据保存在 `.tmp/codex-grok-live/`；旧独立进程与真实新会话验收必须区分。
+
 接口依据为本机 `codex app-server generate-ts --experimental` 导出的协议，以及 [官方 App Server 文档](https://learn.chatgpt.com/docs/app-server)。实现入口：`CodexProxyTransport.swift`、`CodexSharedQuestions.swift`、`MonitorStore.swift`。
 
 ## 显示与回答

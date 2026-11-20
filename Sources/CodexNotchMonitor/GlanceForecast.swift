@@ -151,9 +151,15 @@ enum GlanceStripMetric: String, CaseIterable {
 }
 
 enum GlanceProvider: String, CaseIterable {
-    case codex, claude, grok
+    case codex, claude, grok, antigravity
 
-    static func resolve(_ saved: String, claudeEnabled: Bool, grokEnabled: Bool = false) -> Self {
+    static func resolve(
+        _ saved: String,
+        claudeEnabled: Bool,
+        grokEnabled: Bool = false,
+        antigravityEnabled: Bool = false
+    ) -> Self {
+        if antigravityEnabled && saved == Self.antigravity.rawValue { return .antigravity }
         if grokEnabled && saved == Self.grok.rawValue { return .grok }
         return claudeEnabled && saved == Self.claude.rawValue ? .claude : .codex
     }
@@ -162,6 +168,7 @@ enum GlanceProvider: String, CaseIterable {
 /// Read-only projection of Claude snapshots. Never falls back to Codex data.
 struct GlanceClaudeSnapshot {
     let windows: [RateLimitWindow]
+    let rolledOverFiveHour: Bool
     let isStale: Bool
     let observedAt: Date?
     let quotaPlaceholder: String?
@@ -199,6 +206,16 @@ struct GlanceClaudeSnapshot {
             return .init(usedPercent: Int(window.usedPercent.rounded()), windowDurationMinutes: minutes, resetsAt: window.resetsAt)
         }
         windows = [convert(limits?.fiveHour, minutes: 300), convert(limits?.sevenDay, minutes: 10_080)].compactMap { $0 }
+        if statusLineEnabled, validCapture, let captured,
+           now.timeIntervalSince(captured) <= 1_800,
+           let fiveReset = limits?.fiveHour?.resetsAt,
+           fiveReset.timeIntervalSinceReferenceDate.isFinite,
+           fiveReset > captured, fiveReset <= now,
+           now.timeIntervalSince(fiveReset) <= 18_000 {
+            rolledOverFiveHour = true
+        } else {
+            rolledOverFiveHour = false
+        }
         quotaPlaceholder = !statusLineEnabled ? "开启 Claude 状态栏后可显示额度"
             : windows.isEmpty ? "等待 Claude Code 下一次回复后同步额度" : nil
         usageReady = usage?.complete == true

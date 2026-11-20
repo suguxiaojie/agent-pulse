@@ -1,17 +1,21 @@
-# Codex Pulse 项目规范
+# Agent Pulse 项目规范
 
 ## 适用范围
 
-- GitHub 仓库为 suguxiaojie/codex-pulse；应用更新接口、Release 校验与文档链接统一使用该仓库，安装包文件名继续保留 CodexNotchMonitor 兼容标识。
-- 应用展示名称为 Codex Pulse；为兼容现有配置与数据，保留 CodexNotchMonitor target／可执行文件／安装路径、com.coverai.codex-notch-monitor Bundle ID、既有偏好键与数据目录，不随品牌名称迁移。
+- GitHub 仓库为 suguxiaojie/agent-pulse（原 suguxiaojie/codex-pulse）；应用更新接口、Release 校验与文档链接统一使用该仓库，安装包文件名继续保留 CodexNotchMonitor 兼容标识。
+- 应用展示名称为 Agent Pulse（原 Codex Pulse）；为兼容现有配置与数据，保留 CodexNotchMonitor target／可执行文件／安装路径、com.coverai.codex-notch-monitor Bundle ID、既有偏好键与数据目录，不随品牌名称迁移。
 - 本项目是 Swift 实现的原生 macOS 应用，保持现有 Swift Package 结构和 AppKit／SwiftUI 技术栈。
 - Codex 任务监控使用桌面 IPC 与本地日志；允许在用户明确点击后，经桌面 IPC follower 协议回答当前仍在等待的审批／提问，请求必须与快照中的 handle（epoch、owner、revision、nonce、rawRequest）完全一致；不恢复 Codex lifecycle Hook，不写 Codex 客户端配置；不自动批准。
 - One Native／共享 Codex CLI 的异步提问通过现有 daemon 的 `app-server proxy` 读取；仅对本地日志已识别且 daemon 仍加载的用户会话显示。显式回答须重新核对连接 epoch、轮次、问题 ID／正文／选项，并用 `turn/steer.expectedTurnId` 限定当前活动轮次；已结束轮次回原客户端，不自动 `turn/start`、resume 或启动 daemon。协议与验证见 `docs/one-native-questions.md`。
+- 用户已授权与 OneNative 原生接入层联调：允许发现 OneNative 为受管新启动／恢复建立的终端独立 App Server，Pulse 只连接已存在、同 UID 且关联存活原终端的私有 Socket，沿用上述问题与显式回答校验。端点身份不得包含凭据；不由 Pulse 启动服务，不切换或重启当前 Codex，不通过模拟终端输入代替带轮次约束的原生答复。
 - Claude Code 独立接入允许可选专属 Hook／statusLine；启用前备份配置，只管理本应用标记项，停用恢复原状态栏并保留其他工具配置。不得读取账号凭据；审批必须对应当前真实请求，等待上限 2 分钟，失联／超时交回 Claude 原客户端。
-- Grok CLI 使用官方 `_x.ai/billing` 额度查询及 `$GROK_HOME` 本地记录，不读取凭据、不安装 Hook。用户已明确授权自动接入：备份共享设置的原状态，仅管理 `$GROK_HOME/config.toml` 的 `cli.use_leader`，启用官方共享模式；普通 `grok` 启动后自动识别会话与项目，不选择目录、不由 Pulse 新建终端。配置修改保留其他内容，拒绝不明确写法或并发变更，不复制其他配置中的凭据；不得迁移、重启或接管现有独立终端。监控端连接已存在的官方默认 `leader.sock`，不自动发送 initialize／创建或恢复会话／prompt；岛内仅在用户显式点击后回答真实问题，或对真实权限请求允许一次／拒绝一次，保留原生选项 ID，不生成长期授权。操作前核对连接 epoch、RPC ID、tool call ID、轮次及原请求，失效／原端已答／结果不明时不重复投递，不自动批准。统一额度池与预付余额分开显示；实时任务须有可靠归属证据。协议见 `docs/grok-cli-integration.md` 与 `docs/grok-island-questions.md`。
+- Grok CLI 使用官方 `_x.ai/billing` 额度查询及 `$GROK_HOME` 本地记录，不读取凭据、不安装 Hook。用户已明确授权自动接入：备份共享设置的原状态，仅管理 `$GROK_HOME/config.toml` 的 `cli.use_leader`，启用官方共享模式；普通 `grok` 启动后自动识别会话与项目，不选择目录、不由 Pulse 新建终端。配置修改保留其他内容，拒绝不明确写法或并发变更，不复制其他配置中的凭据；不得迁移、重启或接管现有独立终端。监控端连接已存在的官方默认 `leader.sock`，以及同一 `$GROK_HOME` 下按 Grok 官方 `leader-*.sock` 命名约定存在的同用户 socket（OneNative 为每次终端启动分配的独立 leader，经用户授权），逐个连接并把回答发回提问的 leader，不自动发送 initialize／创建或恢复会话／prompt；岛内仅在用户显式点击后回答真实问题，或对真实权限请求允许一次／拒绝一次，保留原生选项 ID，不生成长期授权。操作前核对连接 epoch、RPC ID、tool call ID、轮次及原请求，失效／原端已答／结果不明时不重复投递，不自动批准。统一额度池与预付余额分开显示；实时任务须有可靠归属证据。协议见 `docs/grok-cli-integration.md` 与 `docs/grok-island-questions.md`。
+- Google Antigravity 接入覆盖本机 2.0 桌面端、IDE 与 `agy` CLI 三端 `~/.gemini/` 本地转录及摘要库，默认关闭；经用户授权，启用时先备份配置，仅管理 `~/.gemini/config/hooks.json` 中的 `"codex-pulse"` 命名键（不注册 `PreToolUse`，Fail-Closed 兜底输出合法 JSON，严禁自动批准）与 `~/.gemini/antigravity-cli/settings.json` 的 `statusLine`（剥离 `email` 与凭据，原样转发原状态栏，停用完整恢复）。多模型组配额与 AI Credits 分开展示；已公开官方标准费率的 Gemini 4／3.8／3.x／2.5、Claude 与 GPT-OSS 模型按公开单价估算等价成本，未公开单价或未标明模型的记录保留金额未知（`≥` 下界）；交互提问跳转回原客户端处理。说明与验证见 `docs/antigravity-integration.md` 及 `scripts/test-antigravity.sh`。
 - 只修改与当前需求直接相关的文件，不清理、回滚或覆盖用户已有的未提交改动。
 
 ## 本地数据安全
+
+- 用户本次明确授权的一次 Grok 受控重载已执行：取消测试题、正常退出 PID 23149，再于原项目原终端接续会话 `01a195b9-bede-7eb1-bde2-f827c090fa81`。该例外已使用完毕，不授权后续 Grok 重载或 Codex 的重启／回答；未退出 OneNative，未直接清除或改写会话文件，未代选业务选项。
 
 - `~/.codex` 与 `~/Library/Application Support/CodexNotchMonitor` 中的会话、账号连续性和备份数据默认只读；需要改写、迁移或删除时必须先得到用户确认。
 - 不读取、保存或输出 `auth.json`、Cookie、Token、API Key 等账号凭据。

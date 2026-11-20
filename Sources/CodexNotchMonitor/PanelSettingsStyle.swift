@@ -64,18 +64,20 @@ struct PanelSettingsToggleStyle: ToggleStyle {
 struct PanelSettingsSegments: View {
     let options: [String]
     @Binding var selection: String
-    var width: CGFloat = 184
+    var width: CGFloat? = 184
     var title = "面板设置分组"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var namespace
     @FocusState private var focused: String?
 
     var body: some View {
-        HStack(spacing: 2) {
+        let track = HStack(spacing: 2) {
             ForEach(options, id: \.self) { option in
                 Button { select(option) } label: {
                     Text(option)
                         .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
                         .foregroundStyle(selection == option ? PanelSettingsTheme.primary : PanelSettingsTheme.secondary)
                         .frame(maxWidth: .infinity, minHeight: 24)
                         .background {
@@ -94,7 +96,14 @@ struct PanelSettingsSegments: View {
         }
         .padding(3)
         .modifier(MonitorSegmentTrack())
-        .frame(width: width)
+
+        Group {
+            if let width {
+                track.frame(width: width)
+            } else {
+                track.frame(maxWidth: .infinity)
+            }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title)
         .onMoveCommand { direction in
@@ -212,6 +221,7 @@ struct SettingsRow<Control: View>: View {
     let title: String
     let detail: String
     var numericDetail = false
+    var stackedControl = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ViewBuilder let control: Control
 
@@ -230,19 +240,23 @@ struct SettingsRow<Control: View>: View {
     }
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) {
-                SettingsGlyph(symbol: symbol)
-                label.frame(minWidth: detail.isEmpty ? nil : 120, maxWidth: .infinity, alignment: .leading)
-                Spacer(minLength: 0)
-                control.fixedSize()
-            }
-            HStack(alignment: .top, spacing: 12) {
-                SettingsGlyph(symbol: symbol)
-                VStack(alignment: .leading, spacing: 10) {
+        Group {
+            if stackedControl {
+                HStack(alignment: .top, spacing: 12) {
+                    SettingsGlyph(symbol: symbol)
+                    VStack(alignment: .leading, spacing: 10) {
+                        label
+                        control.frame(maxWidth: .infinity, alignment: .leading)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else {
+                HStack(spacing: 16) {
+                    SettingsGlyph(symbol: symbol)
                     label
-                    control.fixedSize(horizontal: false, vertical: true)
-                }.frame(maxWidth: .infinity, alignment: .leading)
+                        .layoutPriority(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    control.fixedSize()
+                }
             }
         }
         .padding(.vertical, 12).frame(minHeight: 58)

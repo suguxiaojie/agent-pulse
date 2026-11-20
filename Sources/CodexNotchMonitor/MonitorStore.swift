@@ -165,6 +165,7 @@ final class MonitorStore: ObservableObject {
     private let quotaService = QuotaService()
     let claude = ClaudeCodeRuntime()
     let grok = GrokRuntime()
+    let antigravity = AntigravityRuntime()
     private let sessionActivityService = SessionActivityService()
     let approvalUpdates = PassthroughSubject<Void, Never>()
     private let nativeActivityObserver = NativeActivityObserver()
@@ -176,6 +177,16 @@ final class MonitorStore: ObservableObject {
             .union(grok.questions.map(\.id))
     }
     func islandApproval(for row: ActivitySessionSnapshot) -> IslandApprovalContent {
+        if row.provider == "Antigravity" {
+            return .init(
+                id: row.id + "-antigravity",
+                provider: row.provider,
+                title: row.waitReason == .userInput ? "需要回答" : "待处理请求",
+                summary: row.actionText,
+                fallbackTitle: antigravity.fallbackTitle(for: row),
+                fallback: { [weak self] in self?.antigravity.openClient(for: row) }
+            )
+        }
         if row.provider == "Grok CLI" {
             guard let request = grok.questions.first(where: { "grok:" + $0.sessionID == row.sessionID && $0.turnID == row.turnID && row.replyRequestIDs.contains($0.id) }) else {
                 return .init(id: row.id + "-terminal", provider: row.provider, title: "请在 Grok 终端处理", summary: row.actionText, fallbackTitle: "请在原终端处理")
@@ -458,6 +469,8 @@ final class MonitorStore: ObservableObject {
         claude.start()
         grok.onRowsChanged = { [weak self] in self?.publishActivityRows() }
         grok.start()
+        antigravity.onRowsChanged = { [weak self] in self?.publishActivityRows() }
+        antigravity.start()
         do { try AppPaths.prepareDirectories() } catch { }
         observeCodexTerminationForSidebarCleanup()
         processPendingSidebarCleanups()
@@ -512,6 +525,8 @@ final class MonitorStore: ObservableObject {
                         if self.claude.usage == nil { self.claude.refreshUsage() }
                     case .grok:
                         self.grok.refresh()
+                    case .antigravity:
+                        self.antigravity.refresh()
                     default: break
                     }
                 }
@@ -2763,7 +2778,7 @@ final class MonitorStore: ObservableObject {
     }
 
     private func publishActivityRows() {
-        let combined = activitySessionState.rows + claude.rows + grok.rows
+        let combined = activitySessionState.rows + claude.rows + grok.rows + antigravity.rows
         if activitySessions != combined { activitySessions = combined }
     }
 

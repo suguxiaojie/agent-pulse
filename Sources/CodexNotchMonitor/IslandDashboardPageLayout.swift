@@ -5,10 +5,11 @@ struct DashboardPageLayout<Content: View, Footer: View>: View {
     let onHeightChange: (CGFloat) -> Void
     let content: Content
     let footer: Footer
-    @State private var contentHeight: CGFloat = 400
-    init(maximumHeight: CGFloat?, onHeightChange: @escaping (CGFloat) -> Void,
+    @State private var contentHeight: CGFloat
+    init(maximumHeight: CGFloat?, initialContentHeight: CGFloat = 400, onHeightChange: @escaping (CGFloat) -> Void,
          @ViewBuilder content: () -> Content, @ViewBuilder footer: () -> Footer) {
         self.maximumHeight = maximumHeight; self.onHeightChange = onHeightChange
+        self._contentHeight = State(initialValue: max(1, initialContentHeight))
         self.content = content(); self.footer = footer()
     }
     private var measuredContent: some View {

@@ -89,6 +89,23 @@ struct IslandFloatingUsageCapsule: View {
                         }.font(FloatingSurfaceTypography.control).foregroundStyle(FloatingSurfaceTheme.primary())
                             .opacity(stale ? 0.55 : 1).padding(.horizontal, 12).frame(height: 32).fixedSize()
                             .modifier(IslandNativeBackdropMaterial(shape: Capsule()))
+                    } else if model.usageProvider == .antigravity {
+                        let staleLimit = AntigravityQuotaSnapshot.uiStaleThreshold
+                        let active = model.antigravityStatusLineEnabled
+                            ? (model.antigravityQuota?.activeWindows(at: context.date, staleCutoff: staleLimit) ?? [])
+                            : []
+                        let primary = active.min { $0.remainingPercent < $1.remainingPercent }
+                        let stale = model.antigravityQuota?.isStale(at: context.date, threshold: staleLimit) == true
+                        HStack(spacing: 6) {
+                            Image(systemName: "sparkles").accessibilityHidden(true)
+                            Text("Antigravity")
+                            Text(primary.map { "\($0.remainingPercent)%" } ?? "—").monospacedDigit()
+                            Text(primary != nil ? IslandFloatingQuotaPeriods.countdown(until: primary?.resetsAt, now: context.date) + "重置" : "等待额度")
+                                .foregroundStyle(FloatingSurfaceTheme.secondary())
+                            if stale && primary != nil { Text("上次观测").foregroundStyle(FloatingSurfaceTheme.secondary()) }
+                        }.font(FloatingSurfaceTypography.control).foregroundStyle(FloatingSurfaceTheme.primary())
+                            .opacity(stale ? 0.55 : 1).padding(.horizontal, 12).frame(height: 32).fixedSize()
+                            .modifier(IslandNativeBackdropMaterial(shape: Capsule()))
                     } else {
                     IslandUsageCapsuleContent(windows: IslandFloatingQuotaPeriods.windows(model.quotaState),
                         current: IslandFloatingQuotaPeriods.current(model.quotaState), now: context.date)

@@ -1,2 +1,5 @@
 import Foundation
-_ = ClaudeCodeHookMode.handles(Array(CommandLine.arguments.dropFirst()))
+let arguments = Array(CommandLine.arguments.dropFirst())
+if !ClaudeCodeHookMode.handles(arguments) {
+    _ = AntigravityHookMode.handles(arguments)
+}

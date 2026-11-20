@@ -21,6 +21,7 @@ struct GlanceView: View {
     @ObservedObject var store: MonitorStore
     @ObservedObject private var claude: ClaudeCodeRuntime
     @ObservedObject private var grok: GrokRuntime
+    @ObservedObject private var antigravity: AntigravityRuntime
     @AppStorage("glance.provider") private var savedProvider = "codex"
     @State private var now = Date()
     let onQuit: () -> Void
@@ -52,17 +53,42 @@ struct GlanceView: View {
         self.store = store
         self.claude = store.claude
         self.grok = store.grok
+        self.antigravity = store.antigravity
         self.onQuit = onQuit
         self.onOpenCenter = onOpenCenter
         self.onPreferredHeightChange = onPreferredHeightChange
     }
 
-    private var provider: GlanceProvider { .resolve(savedProvider, claudeEnabled: claude.enabled, grokEnabled: grok.enabled) }
+    private var provider: GlanceProvider {
+        .resolve(savedProvider, claudeEnabled: claude.enabled, grokEnabled: grok.enabled, antigravityEnabled: antigravity.enabled)
+    }
+    private var availableProviders: [GlanceProvider] {
+        [.codex]
+            + (claude.enabled ? [.claude] : [])
+            + (grok.enabled ? [.grok] : [])
+            + (antigravity.enabled ? [.antigravity] : [])
+    }
+    private var usesTwoRowHeader: Bool {
+        availableProviders.count >= 3
+    }
+    private var effectiveHeaderHeight: CGFloat {
+        usesTwoRowHeader ? 78 : GlanceLayout.headerHeight
+    }
     private var claudeSnapshot: GlanceClaudeSnapshot {
         .init(limits: claude.limits, usage: claude.usage, statusLineEnabled: claude.statusLineEnabled, now: now)
     }
     private var quotaWindows: [RateLimitWindow] {
         provider == .claude ? claudeSnapshot.windows : primaryBucket?.windows ?? []
+    }
+    private var effectiveQuotaWindowCount: Int {
+        switch provider {
+        case .antigravity:
+            return antigravity.statusLineEnabled ? (antigravity.quota?.activeWindows(at: now, staleCutoff: AntigravityQuotaSnapshot.uiStaleThreshold).count ?? 0) : 0
+        case .grok:
+            return 1
+        case .codex, .claude:
+            return quotaWindows.count
+        }
     }
 
     var body: some View {
@@ -79,7 +105,20 @@ struct GlanceView: View {
         .foregroundStyle(primaryText)
         .background(alignment: .top) {
             if !reduceTransparency && contrast != .increased {
-                RadialGradient(colors: [weatherColor.opacity((colorScheme == .dark ? 0.22 : 0.14) * (provider == .claude ? claudeSnapshot.glowMultiplier : 1)), .clear],
+                let glowMultiplier: Double = {
+                    switch provider {
+                    case .claude:
+                        return claudeSnapshot.glowMultiplier
+                    case .antigravity:
+                        return (antigravity.quota?.isStale(at: now, threshold: AntigravityQuotaSnapshot.uiStaleThreshold) ?? false) ? 0.5 : 1
+                    case .grok:
+                        let displayNow = GrokDisplayClock.now(sampled: now)
+                        return (grok.quotaFailed || (grok.quota?.isStale(at: displayNow) ?? false)) ? 0.5 : 1
+                    case .codex:
+                        return 1
+                    }
+                }()
+                RadialGradient(colors: [weatherColor.opacity((colorScheme == .dark ? 0.22 : 0.14) * glowMultiplier), .clear],
                                center: .top, startRadius: 0, endRadius: 250)
                     .frame(height: 300).blur(radius: 12)
                     .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: weatherTone)
@@ -90,6 +129,30 @@ struct GlanceView: View {
         .environment(\.glanceTextShadow, colorScheme == .dark && surfaceOpacity < 0.30 && !reduceTransparency && contrast != .increased)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: primaryRemaining)
         .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { now = $0 }
+        .onReceive(NotificationCenter.default.publisher(for: .glanceKeyboardNavigate)) { note in
+            guard page == .summary,
+                  !store.isConsumingQuotaResetCredit,
+                  !showsResetConfirmation,
+                  availableProviders.count > 1,
+                  let nav = note.object as? GlanceKeyboardNavigation else { return }
+            let list = availableProviders
+            let currentIdx = list.firstIndex(of: provider) ?? 0
+            let targetIdx: Int
+            switch nav {
+            case .previous:
+                targetIdx = (currentIdx - 1 + list.count) % list.count
+            case .next:
+                targetIdx = (currentIdx + 1) % list.count
+            case .index(let idx):
+                guard list.indices.contains(idx) else { return }
+                targetIdx = idx
+            }
+            let nextProvider = list[targetIdx]
+            guard nextProvider != provider else { return }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                savedProvider = nextProvider.rawValue
+            }
+        }
         .onChange(of: claude.enabled) { enabled in
             if !enabled && savedProvider == GlanceProvider.claude.rawValue { savedProvider = GlanceProvider.codex.rawValue }
         }
@@ -98,6 +161,12 @@ struct GlanceView: View {
         }
         .onChange(of: grok.refreshing) { busy in
             if provider == .grok && !busy && refreshVisualState == .refreshing { finishManualRefresh() }
+        }
+        .onChange(of: antigravity.enabled) { enabled in
+            if !enabled && savedProvider == GlanceProvider.antigravity.rawValue { savedProvider = GlanceProvider.codex.rawValue }
+        }
+        .onChange(of: antigravity.scanning) { busy in
+            if provider == .antigravity && !busy && refreshVisualState == .refreshing { finishManualRefresh() }
         }
         .onChange(of: provider) { _ in
             readingHeight = nil
@@ -154,9 +223,34 @@ struct GlanceView: View {
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(spacing: GlanceLayout.moduleSpacing) {
                         if provider == .grok {
-                            GrokGlanceContent(runtime: grok, now: now, showQuota: showPrimaryQuota,
-                                showCost: showCostEstimate, showActivity: showTokenActivity,
-                                showDaily: showDailyTokens, showMonth: showThirtyDayTokens, metric: $stripMetric)
+                            GrokGlanceContent(
+                                runtime: grok,
+                                now: now,
+                                showQuota: showPrimaryQuota,
+                                showCost: showCostEstimate,
+                                showActivity: showTokenActivity,
+                                showDaily: showDailyTokens,
+                                showMonth: showThirtyDayTokens,
+                                metric: $stripMetric,
+                                weatherColor: weatherColor,
+                                showsInlinePlanBadge: !usesTwoRowHeader,
+                                showCreditBalance: showCreditBalance
+                            )
+                        } else if provider == .antigravity {
+                            AntigravityGlanceContent(
+                                runtime: antigravity,
+                                now: now,
+                                weatherColor: weatherColor,
+                                showsInlinePlanBadge: !usesTwoRowHeader,
+                                showQuota: showPrimaryQuota,
+                                showCost: showCostEstimate,
+                                showCreditBalance: showCreditBalance,
+                                showActivity: showTokenActivity,
+                                showDaily: showDailyTokens,
+                                showMonth: showThirtyDayTokens,
+                                metric: $stripMetric,
+                                onOpenCenter: { onOpenCenter(.antigravity) }
+                            )
                         } else {
                         if showPrimaryQuota { primaryQuota }
                         if provider == .claude {
@@ -187,10 +281,11 @@ struct GlanceView: View {
                         }
                     }
                 }
-                .frame(height: GlanceLayout.readingViewportHeight(panelHeight: geometry.size.height))
+                .frame(height: max(0, geometry.size.height - effectiveHeaderHeight - GlanceLayout.footerHeight))
                 .clipped()
                 footer.padding(.horizontal, GlanceLayout.contentInset)
             }
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
         }
     }
 
@@ -349,8 +444,15 @@ struct GlanceView: View {
     private var preferredHeight: CGFloat {
         switch page {
         case .summary:
-            return GlanceLayout.preferredHeight(readingHeight: readingHeight,
-                estimatedHeight: contentPreferences.preferredHeight(primaryQuotaWindowCount: quotaWindows.count, provider: provider))
+            let extraHeader = effectiveHeaderHeight - GlanceLayout.headerHeight
+            let base = GlanceLayout.preferredHeight(
+                readingHeight: readingHeight,
+                estimatedHeight: contentPreferences.preferredHeight(
+                    primaryQuotaWindowCount: effectiveQuotaWindowCount,
+                    provider: provider
+                )
+            )
+            return min(GlanceLayout.height, base + extraHeader)
         case .quotaReset:
             return GlanceLayout.resetPageHeight
         }
@@ -366,35 +468,136 @@ struct GlanceView: View {
         "此操作将消耗 1 次额度重置机会，并立即重置符合条件的 Codex 用量周期。操作完成后无法撤销。\n\n\(resetCreditExpirationText(store.quotaResetCredits))"
     }
 
+    @ViewBuilder
     private var header: some View {
-        HStack(spacing: 6) {
-            CodexMark(size: 20)
-            Text("Codex Pulse").font(.system(size: 13, weight: .semibold)).fixedSize()
-            Spacer(minLength: 0)
-            if claude.enabled || grok.enabled {
-                GlanceProviderSwitch(selection: Binding(get: { provider }, set: { savedProvider = $0.rawValue }),
-                    available: [.codex] + (claude.enabled ? [.claude] : []) + (grok.enabled ? [.grok] : []))
+        if usesTwoRowHeader {
+            VStack(spacing: 6) {
+                HStack(spacing: 6) {
+                    CodexMark(size: 20)
+                    Text("Agent Pulse").font(.system(size: 13, weight: .semibold)).fixedSize()
+                    Spacer(minLength: 6)
+                    headerContextBadge
+                }
+                GlanceProviderSwitch(
+                    selection: Binding(get: { provider }, set: { savedProvider = $0.rawValue }),
+                    available: availableProviders,
+                    fullWidth: true,
+                    activeColor: weatherColor,
+                    providerTones: providerTones
+                )
+                .disabled(store.isConsumingQuotaResetCredit || showsResetConfirmation)
+            }
+            .padding(.horizontal, GlanceLayout.contentInset)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+            .frame(height: effectiveHeaderHeight)
+        } else {
+            HStack(spacing: 6) {
+                CodexMark(size: 20)
+                Text("Agent Pulse").font(.system(size: 13, weight: .semibold)).fixedSize()
+                Spacer(minLength: 0)
+                if availableProviders.count > 1 {
+                    GlanceProviderSwitch(
+                        selection: Binding(get: { provider }, set: { savedProvider = $0.rawValue }),
+                        available: availableProviders,
+                        activeColor: weatherColor,
+                        providerTones: providerTones
+                    )
                     .disabled(store.isConsumingQuotaResetCredit || showsResetConfirmation)
-            } else { accountBadge }
+                } else {
+                    accountBadge
+                }
+            }
+            .padding(.horizontal, GlanceLayout.contentInset)
+            .frame(height: GlanceLayout.headerHeight)
         }
-        .padding(.horizontal, GlanceLayout.contentInset)
-        .frame(height: GlanceLayout.headerHeight)
+    }
+
+    @ViewBuilder
+    private var headerContextBadge: some View {
+        switch provider {
+        case .codex:
+            accountBadge
+        case .antigravity:
+            if antigravity.statusLineEnabled, let plan = antigravity.quota?.resolvedPlan {
+                let stale = antigravity.quota?.isStale(at: now, threshold: AntigravityQuotaSnapshot.uiStaleThreshold) ?? false
+                statusChipBadge(title: plan, color: stale ? Color.orange.opacity(0.88) : Color.green.opacity(0.90))
+            }
+        case .grok:
+            if let plan = grok.quota?.plan {
+                statusChipBadge(
+                    title: plan,
+                    color: grok.quotaFailed ? Color.orange.opacity(0.88) : Color.green.opacity(0.90)
+                )
+            }
+        case .claude:
+            if claude.statusLineEnabled {
+                let missing = claudeSnapshot.windows.isEmpty && !claudeSnapshot.rolledOverFiveHour
+                statusChipBadge(
+                    title: missing ? "等待状态栏" : "Claude Code",
+                    color: (claudeSnapshot.isStale || missing) ? Color.orange.opacity(0.88) : Color.green.opacity(0.90)
+                )
+            } else {
+                statusChipBadge(title: "仅本地日志", color: Color.orange.opacity(0.88))
+            }
+        }
+    }
+
+    private func statusChipBadge(title: String, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Circle().fill(color).frame(width: 5, height: 5)
+            Text(title)
+                .font(.system(size: 9, weight: .medium))
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+        }
+        .padding(.horizontal, 7).padding(.vertical, 5)
+        .background(FloatingSurfaceTheme.chipFill(colorScheme), in: Capsule())
+        .help(title)
     }
 
     private var accountBadge: some View {
-            HStack(spacing: 4) {
-                Circle().fill(currentAccountIndicatorColor).frame(width: 5, height: 5)
-                Text(currentAccountBadgeTitle).font(.system(size: 9, weight: .medium)).lineLimit(1)
-            }
-            .padding(.horizontal, 7).padding(.vertical, 5)
-            .background(FloatingSurfaceTheme.chipFill(colorScheme), in: Capsule())
-            .help(currentAccountBadgeTitle)
+        statusChipBadge(title: currentAccountBadgeTitle, color: currentAccountIndicatorColor)
     }
 
-    private var weatherTone: GlanceTone {
-        guard let window = primaryWindow else { return .calm }
-        return GlanceTone(window: window, forecast: QuotaPaceForecast(window: window, now: now))
+    private func tone(for target: GlanceProvider) -> GlanceTone {
+        switch target {
+        case .codex:
+            guard let window = primaryBucket?.limitingWindow else { return .calm }
+            return GlanceTone(window: window, forecast: QuotaPaceForecast(window: window, now: now))
+        case .claude:
+            guard let window = claudeSnapshot.limitingWindow else { return .calm }
+            return GlanceTone(window: window, forecast: QuotaPaceForecast(window: window, now: now))
+        case .grok:
+            let displayNow = GrokDisplayClock.now(sampled: now)
+            guard let quota = grok.quota, quota.isAvailable(at: displayNow) else { return .calm }
+            let durationMinutes: Int? = {
+                if let start = quota.startsAt, let end = quota.resetsAt, end > start {
+                    return max(1, Int(end.timeIntervalSince(start) / 60))
+                }
+                if quota.periodType == "USAGE_PERIOD_TYPE_WEEKLY" { return 10_080 }
+                if quota.periodType == "USAGE_PERIOD_TYPE_MONTHLY" { return 43_200 }
+                return nil
+            }()
+            let rl = RateLimitWindow(usedPercent: Int(quota.usedPercent.rounded()), windowDurationMinutes: durationMinutes, resetsAt: quota.resetsAt)
+            return GlanceTone(window: rl, forecast: QuotaPaceForecast(window: rl, now: displayNow))
+        case .antigravity:
+            let active = antigravity.statusLineEnabled ? (antigravity.quota?.activeWindows(at: now, staleCutoff: AntigravityQuotaSnapshot.uiStaleThreshold) ?? []) : []
+            guard let limiting = active.min(by: { $0.remainingPercent < $1.remainingPercent }) else { return .calm }
+            let rl = RateLimitWindow(usedPercent: Int(limiting.usedPercent.rounded()), windowDurationMinutes: limiting.durationMinutes, resetsAt: limiting.resetsAt)
+            return GlanceTone(window: rl, forecast: QuotaPaceForecast(window: rl, now: now))
+        }
     }
+
+    private var providerTones: [GlanceProvider: GlanceTone] {
+        var map: [GlanceProvider: GlanceTone] = [:]
+        for item in availableProviders {
+            map[item] = tone(for: item)
+        }
+        return map
+    }
+
+    private var weatherTone: GlanceTone { tone(for: provider) }
 
     private var weatherColor: Color { weatherTone.color }
 
@@ -408,7 +611,7 @@ struct GlanceView: View {
                         Text(compactWindowTitle(window)).font(.system(size: 11, weight: .medium)).foregroundStyle(secondaryText)
                             .fixedSize()
                         Spacer(minLength: 0)
-                        if provider == .codex && claude.enabled { accountBadge }
+                        if provider == .codex && !usesTwoRowHeader && availableProviders.count > 1 { accountBadge }
                     }
                     HStack(alignment: .firstTextBaseline, spacing: 2) {
                         Text("\(window.remainingPercent)").font(.system(size: 64, weight: .semibold, design: .rounded))
@@ -417,10 +620,22 @@ struct GlanceView: View {
                     }.glanceReadableText()
                     Text(copy.primary).font(.system(size: 12.5, weight: .medium)).glanceReadableText()
                     Text(copy.secondary + (provider == .claude ? claudeSnapshot.observationSuffix() : "")).font(.system(size: 10.5)).foregroundStyle(tertiaryText)
+                    if provider == .claude && claudeSnapshot.rolledOverFiveHour {
+                        Text("5 小时额度 100% · 已重置（待下次回复同步）")
+                            .font(.system(size: 10)).foregroundStyle(secondaryText)
+                    }
                     ForEach(Array(quotaWindows.filter { $0 != window }.enumerated()), id: \.offset) { _, other in
                         Text("\(compactWindowTitle(other)) \(other.remainingPercent)% · \(resetText(other))")
                             .font(.system(size: 10)).foregroundStyle(secondaryText)
                     }
+                } else if provider == .claude && claudeSnapshot.rolledOverFiveHour {
+                    Text("5 小时额度").font(.system(size: 11, weight: .medium)).foregroundStyle(secondaryText)
+                    HStack(alignment: .firstTextBaseline, spacing: 2) {
+                        Text("100").font(.system(size: 64, weight: .semibold, design: .rounded)).monospacedDigit()
+                        Text("%").font(.system(size: 27, weight: .medium, design: .rounded)).foregroundStyle(secondaryText)
+                    }.glanceReadableText()
+                    Text("当前 5 小时周期已重置").font(.system(size: 12.5, weight: .medium)).glanceReadableText()
+                    Text("待下次 Claude 回复同步新周期重置时间").font(.system(size: 10.5)).foregroundStyle(tertiaryText)
                 } else if provider == .claude {
                     Text("Claude 额度").font(FloatingSurfaceTypography.section)
                     Text(claudeSnapshot.quotaPlaceholder ?? "等待 Claude Code 下一次回复后同步额度")
@@ -433,7 +648,7 @@ struct GlanceView: View {
                     HStack {
                         Text("Codex 额度").font(FloatingSurfaceTypography.section)
                         Spacer(minLength: 0)
-                        if claude.enabled { accountBadge }
+                        if !usesTwoRowHeader && availableProviders.count > 1 { accountBadge }
                     }
                     Text(footerUpdateText == "数据可能过期" ? "额度加载失败" : "正在同步额度窗口…")
                         .font(FloatingSurfaceTypography.label).foregroundStyle(tertiaryText)
@@ -521,15 +736,33 @@ struct GlanceView: View {
         .padding(.vertical, 8)
     }
 
+    private var targetCenterSection: MonitorCenterSection {
+        switch provider {
+        case .codex: return .usage
+        case .claude: return .claude
+        case .grok: return .grok
+        case .antigravity: return .antigravity
+        }
+    }
+
+    private var centerButtonHelp: String {
+        switch provider {
+        case .codex: return "打开监控中心"
+        case .claude: return "打开 Claude 监控专页"
+        case .grok: return "打开 Grok 监控专页"
+        case .antigravity: return "打开 Antigravity 监控专页"
+        }
+    }
+
     private var footer: some View {
         HStack(spacing: 4) {
             Circle().fill(footerStatusColor).frame(width: 5, height: 5)
             Text(footerUpdateText).font(.system(size: 9)).foregroundStyle(secondaryText).lineLimit(1)
             Spacer(minLength: 0)
             refreshFooterButton
-            footerButton(symbol: "chart.bar", help: "打开监控中心") { onOpenCenter(.usage) }
+            footerButton(symbol: "chart.bar", help: centerButtonHelp) { onOpenCenter(targetCenterSection) }
             footerButton(symbol: "gearshape", help: "打开面板设置") { onOpenCenter(.panelSettings) }
-            footerButton(symbol: "power", help: "退出 Codex Pulse", action: onQuit)
+            footerButton(symbol: "power", help: "退出 Agent Pulse", action: onQuit)
         }.frame(height: GlanceLayout.footerHeight)
     }
 
@@ -619,6 +852,7 @@ struct GlanceView: View {
             }
         }
         if provider == .grok { grok.refresh() }
+        else if provider == .antigravity { antigravity.refresh() }
         else if provider == .claude { claude.refreshUsage() }
         else { store.refreshAll() }
 
@@ -678,7 +912,7 @@ struct GlanceView: View {
     }
 
     private var primaryWindow: RateLimitWindow? {
-        if provider == .grok { return nil }
+        if provider == .grok || provider == .antigravity { return nil }
         return provider == .claude ? claudeSnapshot.limitingWindow : primaryBucket?.limitingWindow
     }
 
@@ -702,6 +936,13 @@ struct GlanceView: View {
 
     private var footerUpdateText: String {
         if provider == .grok { return grok.refreshing ? "正在查询" : grok.quotaStatus }
+        if provider == .antigravity {
+            if antigravity.scanning { return "正在刷新" }
+            let latest = [antigravity.statusLineEnabled ? antigravity.quota?.capturedAt : nil, antigravity.usage?.updatedAt].compactMap { $0 }.max()
+            guard let date = latest else { return "等待数据" }
+            if now.timeIntervalSince(date) < 60 { return "刚刚更新" }
+            return "更新于 " + date.formatted(.dateTime.hour().minute())
+        }
         if provider == .claude {
             guard let date = claudeSnapshot.updatedAt else { return "等待数据" }
             if now.timeIntervalSince(date) < 60 { return "刚刚更新" }
@@ -722,6 +963,11 @@ struct GlanceView: View {
 
     private var footerStatusColor: Color {
         if provider == .grok { return grok.quotaFailed || grok.quota == nil ? .orange : .green }
+        if provider == .antigravity {
+            let active = antigravity.statusLineEnabled ? (antigravity.quota?.activeWindows(at: now, staleCutoff: AntigravityQuotaSnapshot.uiStaleThreshold) ?? []) : []
+            let stale = antigravity.quota?.isStale(at: now, threshold: AntigravityQuotaSnapshot.uiStaleThreshold) ?? false
+            return antigravity.usage == nil || stale || (antigravity.statusLineEnabled && active.isEmpty) ? .orange : .green
+        }
         if provider == .claude {
             return claudeSnapshot.updatedAt == nil || claudeSnapshot.isStale || !claudeSnapshot.usageReady ? .orange : .green
         }

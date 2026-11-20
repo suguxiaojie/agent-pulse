@@ -11,10 +11,10 @@ struct ClaudeCodeInstaller: Sendable {
         case helperUnavailable, invalidSettingsFile, settingsChanged, writeFailed
         var errorDescription: String? {
             switch self {
-            case .helperUnavailable: "当前 Codex Pulse 构建中缺少活动 Hook 辅助程序。"
+            case .helperUnavailable: "当前 Agent Pulse 构建中缺少活动 Hook 辅助程序。"
             case .invalidSettingsFile: "Claude Code settings.json 不是有效的 JSON 对象。"
             case .settingsChanged: "Claude Code 设置正在被其他程序更新；请稍后重试。"
-            case .writeFailed: "无法写入 Claude Code 设置或 Codex Pulse 连接配置。"
+            case .writeFailed: "无法写入 Claude Code 设置或 Agent Pulse 连接配置。"
             }
         }
     }
