@@ -4,10 +4,13 @@ import Foundation
 /// Antigravity entry points of the shared activity helper.
 ///
 /// `--antigravity-hook --configuration <route.json>` forwards bounded lifecycle
-/// metadata (`SessionStart`, `PreInvocation`, `PostInvocation`, `PostToolUse`, `Stop`)
-/// over Codex Pulse's private Unix socket. Antigravity hooks are synchronous and
-/// fail-closed, so every exit path prints a valid, non-interfering JSON response.
-/// `PreToolUse` is intentionally not registered so Pulse never alters user permission prompts.
+/// metadata (`SessionStart`, `PreInvocation`, `PostInvocation`, `PreToolUse`, `PostToolUse`, `Stop`)
+/// over Agent Pulse's private Unix socket. Antigravity hooks are synchronous and
+/// fail-safe:
+/// - `Stop` always falls back to `{"decision":"stop"}`
+/// - `PreToolUse` always falls back to `{"decision":"allow"}` (which delegates to
+///   Antigravity's native permission policy without auto-approving; only an explicit
+///   user click in Agent Pulse emits `"auto_approve"` or `"deny"`).
 ///
 /// `--antigravity-statusline --configuration <route.json>` records allowlisted
 /// quota/model/state telemetry (explicitly excluding `email` and credentials) and
@@ -29,10 +32,249 @@ enum AntigravityHookMode {
     }
 }
 
+enum AntigravityLocalPolicyGate {
+    private static let fileTools: Set<String> = [
+        "read_file", "view_file",
+        "write_file", "write_to_file",
+        "edit_file", "replace_file_content", "multi_replace_file_content"
+    ]
+    private static let writeTools: Set<String> = [
+        "write_file", "write_to_file",
+        "edit_file", "replace_file_content", "multi_replace_file_content"
+    ]
+
+    static func shouldPromptInIsland(
+        toolName: String,
+        args: [String: Any],
+        transcriptPath: String,
+        cwd: String,
+        workspacePaths: [String],
+        parentConversationID: String?,
+        geminiDirectoryPath: String?
+    ) -> Bool {
+        // Subagents are managed under their parent session; let native sandbox/policy govern them.
+        if let parent = parentConversationID, !parent.isEmpty {
+            return false
+        }
+        if toolName == "ask_question" {
+            if let list = args["questions"] as? [Any], !list.isEmpty {
+                return true
+            }
+            return false
+        }
+
+        let geminiRoot = resolveGeminiRoot(explicit: geminiDirectoryPath)
+        let roots = normalizedWorkspaceRoots(workspacePaths: workspacePaths, cwd: cwd, geminiRoot: geminiRoot)
+        let isCLI = transcriptPath.contains("/antigravity-cli/")
+
+        if isCLI {
+            let cliPolicy = readCLIPolicy(geminiRoot: geminiRoot)
+            if cliPolicy.toolPermission == "always-proceed" {
+                return false
+            }
+            if fileTools.contains(toolName) {
+                let targetPath = extractFilePath(from: args, cwd: cwd)
+                if let targetPath, !isInsideAllowedRoots(path: targetPath, roots: roots), !cliPolicy.allowNonWorkspaceAccess {
+                    return true
+                }
+                if writeTools.contains(toolName) {
+                    if cliPolicy.toolPermission == "strict" { return true }
+                    if cliPolicy.agentMode.isEmpty && cliPolicy.toolPermission == "request-review" { return true }
+                }
+                return false
+            }
+            if toolName == "run_command" {
+                let cmd = (args["CommandLine"] as? String) ?? ""
+                if matchesCLIAllowRule(command: cmd, allowRules: cliPolicy.allowRules) {
+                    return false
+                }
+                if cliPolicy.toolPermission == "strict" { return true }
+                if cliPolicy.agentMode != "auto" && cliPolicy.toolPermission == "request-review" {
+                    return true
+                }
+                return isSensitiveCommand(cmd, cwd: (args["Cwd"] as? String) ?? cwd, roots: roots)
+            }
+            if toolName == "read_url_content" || toolName.hasPrefix("mcp__") {
+                return cliPolicy.toolPermission == "strict" || cliPolicy.toolPermission == "request-review"
+            }
+            return false
+        } else {
+            let appPolicy = readAppPolicy(geminiRoot: geminiRoot)
+            if appPolicy.preset == "AGENT_PERMISSION_PRESET_TURBO" || appPolicy.autoExecution == "ALWAYS_PROCEED" {
+                return false
+            }
+            if fileTools.contains(toolName) {
+                if let targetPath = extractFilePath(from: args, cwd: cwd),
+                   !isInsideAllowedRoots(path: targetPath, roots: roots),
+                   appPolicy.nonWorkspacePolicy != "ALLOW" {
+                    return true
+                }
+                return false
+            }
+            if toolName == "read_url_content" || toolName.hasPrefix("mcp__") {
+                return true
+            }
+            if toolName == "run_command" {
+                let cmd = (args["CommandLine"] as? String) ?? ""
+                if appPolicy.preset == "AGENT_PERMISSION_PRESET_REQUEST_REVIEW" || appPolicy.autoExecution == "REQUIRE_REVIEW" {
+                    return true
+                }
+                return isSensitiveCommand(cmd, cwd: (args["Cwd"] as? String) ?? cwd, roots: roots)
+            }
+            return false
+        }
+    }
+
+    private struct CLIPolicy {
+        var agentMode: String = "auto"
+        var toolPermission: String = "request-review"
+        var allowNonWorkspaceAccess: Bool = false
+        var allowRules: [String] = []
+    }
+
+    private struct AppPolicy {
+        var preset: String = "AGENT_PERMISSION_PRESET_DEFAULT"
+        var autoExecution: String = ""
+        var nonWorkspacePolicy: String = "ASK"
+    }
+
+    private static func resolveGeminiRoot(explicit: String?) -> String {
+        if let explicit, !explicit.isEmpty {
+            return URL(fileURLWithPath: explicit).standardizedFileURL.path
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".gemini", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
+    private static func readCLIPolicy(geminiRoot: String) -> CLIPolicy {
+        var policy = CLIPolicy()
+        let path = (geminiRoot as NSString).appendingPathComponent("antigravity-cli/settings.json")
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              data.count <= 1_048_576,
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return policy
+        }
+        if let mode = root["agentMode"] as? String { policy.agentMode = mode }
+        if let perm = root["toolPermission"] as? String, !perm.isEmpty { policy.toolPermission = perm }
+        if let nonWs = root["allowNonWorkspaceAccess"] as? Bool { policy.allowNonWorkspaceAccess = nonWs }
+        if let perms = root["permissions"] as? [String: Any],
+           let allow = perms["allow"] as? [String] {
+            policy.allowRules = allow
+        }
+        return policy
+    }
+
+    private static func readAppPolicy(geminiRoot: String) -> AppPolicy {
+        var policy = AppPolicy()
+        let path = (geminiRoot as NSString).appendingPathComponent("config/config.json")
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              data.count <= 1_048_576,
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let settings = root["userSettings"] as? [String: Any] else {
+            return policy
+        }
+        if let preset = settings["permissionPreset"] as? String, !preset.isEmpty {
+            policy.preset = preset
+        }
+        if let autoExec = settings["autoExecutionPolicy"] as? String {
+            policy.autoExecution = autoExec
+        }
+        if let nonWs = settings["nonWorkspaceFileAccessPolicy"] as? String, !nonWs.isEmpty {
+            policy.nonWorkspacePolicy = nonWs
+        }
+        return policy
+    }
+
+    private static func normalizedWorkspaceRoots(workspacePaths: [String], cwd: String, geminiRoot: String) -> [String] {
+        var list: [String] = [geminiRoot, "/tmp", "/private/tmp", NSTemporaryDirectory()]
+        for raw in workspacePaths where !raw.isEmpty {
+            list.append(URL(fileURLWithPath: raw).resolvingSymlinksInPath().standardizedFileURL.path)
+        }
+        if !cwd.isEmpty {
+            list.append(URL(fileURLWithPath: cwd).resolvingSymlinksInPath().standardizedFileURL.path)
+        }
+        return list
+    }
+
+    private static func extractFilePath(from args: [String: Any], cwd: String) -> String? {
+        guard let raw = (args["Path"] as? String)
+            ?? (args["TargetFile"] as? String)
+            ?? (args["AbsolutePath"] as? String),
+              !raw.isEmpty else { return nil }
+        let expanded = (raw as NSString).expandingTildeInPath
+        let url: URL
+        if expanded.hasPrefix("/") {
+            url = URL(fileURLWithPath: expanded)
+        } else if !cwd.isEmpty {
+            url = URL(fileURLWithPath: cwd).appendingPathComponent(expanded)
+        } else {
+            return nil
+        }
+        return url.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    private static func isInsideAllowedRoots(path: String, roots: [String]) -> Bool {
+        for root in roots where !root.isEmpty {
+            let cleanRoot = root.hasSuffix("/") ? String(root.dropLast()) : root
+            if path == cleanRoot || path.hasPrefix(cleanRoot + "/") {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func matchesCLIAllowRule(command: String, allowRules: [String]) -> Bool {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        for rule in allowRules {
+            if rule == "command(*)" { return true }
+            if rule.hasPrefix("command(") && rule.hasSuffix(")") {
+                let inner = String(rule.dropFirst(8).dropLast())
+                if !inner.hasPrefix("regex:"),
+                   !trimmed.contains("$("), !trimmed.contains("`"),
+                   (trimmed == inner || trimmed.hasPrefix(inner + " ")) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private static func isSensitiveCommand(_ command: String, cwd: String, roots: [String]) -> Bool {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        if !cwd.isEmpty {
+            let resolvedCwd = URL(fileURLWithPath: cwd).resolvingSymlinksInPath().standardizedFileURL.path
+            if !isInsideAllowedRoots(path: resolvedCwd, roots: roots) {
+                return true
+            }
+        }
+        let patterns = [
+            #"(^|[;&|]\s*)sudo\b"#,
+            #"\brm\s+-[a-zA-Z]*[rRfF][a-zA-Z]*\b"#,
+            #"\bgit\s+(push|reset\s+--hard|clean\s+-[a-zA-Z]*f)\b"#,
+            #"\bgh\s+(release|pr\s+merge|repo\s+delete|repo\s+rename)\b"#,
+            #"\b(curl|wget|ssh|scp|rsync|sftp|nc|ncat)\b"#,
+            #"\b(brew|npm|pnpm|yarn|pip|pip3|cargo)\s+(install|uninstall|publish|upgrade)\b"#,
+            #"\b(kill|pkill|killall|launchctl|osascript|defaults\s+write|chmod\s+777|chown)\b"#
+        ]
+        for pattern in patterns {
+            if trimmed.range(of: pattern, options: .regularExpression) != nil {
+                return true
+            }
+        }
+        return false
+    }
+}
+
 enum AntigravityHookForwarder {
     static func safeResponse(for event: String) -> Data {
         if event == "Stop" {
             return Data("{\"decision\":\"stop\"}\n".utf8)
+        }
+        if event == "PreToolUse" {
+            return Data("{\"decision\":\"allow\"}\n".utf8)
         }
         return Data("{}\n".utf8)
     }
@@ -42,9 +284,11 @@ enum AntigravityHookForwarder {
         let input = ClaudeCodeHookIO.readStandardInput(maximumBytes: 1_048_576)
         let object = input.flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] } ?? [:]
         let event = (object["hookEventName"] as? String) ?? ""
+        var responseData = safeResponse(for: event)
         defer {
-            ClaudeCodeHookIO.writeStandardOutput(safeResponse(for: event))
+            ClaudeCodeHookIO.writeStandardOutput(responseData)
         }
+
         guard arguments.count == 3, arguments[1] == "--configuration",
               let route = ClaudeCodeRoute.read(from: arguments[2]),
               !event.isEmpty,
@@ -53,18 +297,45 @@ enum AntigravityHookForwarder {
             return
         }
 
+        let transcriptPath = (object["transcriptPath"] as? String) ?? ""
+        let cwd = (object["cwd"] as? String) ?? ""
+        let workspacePaths = (object["workspacePaths"] as? [Any])?.compactMap { $0 as? String } ?? []
+        let parentConversationID = object["parentConversationId"] as? String
+        let toolCall = object["toolCall"] as? [String: Any]
+        let toolName = (toolCall?["name"] as? String) ?? ""
+        let toolArgs = (toolCall?["args"] as? [String: Any]) ?? [:]
+
+        let awaitsDecision: Bool = {
+            guard event == "PreToolUse", route.interactiveApprovals == true, !toolName.isEmpty else {
+                return false
+            }
+            return AntigravityLocalPolicyGate.shouldPromptInIsland(
+                toolName: toolName,
+                args: toolArgs,
+                transcriptPath: transcriptPath,
+                cwd: cwd,
+                workspacePaths: workspacePaths,
+                parentConversationID: parentConversationID,
+                geminiDirectoryPath: route.geminiDirectoryPath
+            )
+        }()
+
+        // Non-interactive PreToolUse calls return passthrough immediately without socket round-trip overhead.
+        if event == "PreToolUse" && !awaitsDecision {
+            return
+        }
+
         var payload: [String: Any] = [
             "hookEventName": String(event.prefix(64)),
             "conversationId": conversationID
         ]
-        for key in ["transcriptPath", "modelName", "cwd", "terminationReason"] {
+        for key in ["transcriptPath", "modelName", "cwd", "terminationReason", "parentConversationId"] {
             if let text = object[key] as? String, !text.isEmpty {
                 payload[key] = String(text.prefix(4_096))
             }
         }
-        if let paths = object["workspacePaths"] as? [Any] {
-            let clean = paths.prefix(8).compactMap { ($0 as? String).map { String($0.prefix(4_096)) } }
-            if !clean.isEmpty { payload["workspacePaths"] = clean }
+        if !workspacePaths.isEmpty {
+            payload["workspacePaths"] = workspacePaths.prefix(8).map { String($0.prefix(4_096)) }
         }
         for key in ["stepIdx", "invocationNum", "executionNum"] {
             if let number = object[key] as? NSNumber, number.doubleValue.isFinite {
@@ -88,19 +359,19 @@ enum AntigravityHookForwarder {
                 payload["lastUserInput"] = String(firstLine.prefix(240))
             }
         }
-        if let toolCall = object["toolCall"] as? [String: Any],
-           let name = toolCall["name"] as? String, !name.isEmpty {
-            var sanitizedTool: [String: Any] = ["name": String(name.prefix(128))]
+        if let toolCall, !toolName.isEmpty {
+            var sanitizedTool: [String: Any] = ["name": String(toolName.prefix(128))]
             if let id = toolCall["id"] as? String, !id.isEmpty {
                 sanitizedTool["id"] = String(id.prefix(128))
             }
-            if let args = toolCall["args"] as? [String: Any] {
-                let summary = (args["toolSummary"] as? String)
-                    ?? (args["Description"] as? String)
-                    ?? (args["Role"] as? String)
-                if let summary = summary?.trimmingCharacters(in: .whitespacesAndNewlines), !summary.isEmpty {
-                    sanitizedTool["summary"] = String(summary.prefix(200))
-                }
+            let summary = (toolArgs["toolSummary"] as? String)
+                ?? (toolArgs["Description"] as? String)
+                ?? (toolArgs["Role"] as? String)
+            if let summary = summary?.trimmingCharacters(in: .whitespacesAndNewlines), !summary.isEmpty {
+                sanitizedTool["summary"] = String(summary.prefix(200))
+            }
+            if awaitsDecision, let boundedArgs = ClaudeCodeHookIO.bounded(toolArgs, maximumBytes: 131_072) {
+                sanitizedTool["args"] = boundedArgs
             }
             payload["toolCall"] = sanitizedTool
         }
@@ -114,16 +385,51 @@ enum AntigravityHookForwarder {
             "authenticationToken": route.authenticationToken,
             "eventID": eventID,
             "kind": "hook",
-            "awaitDecision": false,
+            "awaitDecision": awaitsDecision,
             "payload": payload
         ]
         guard JSONSerialization.isValidJSONObject(envelope),
               var data = try? JSONSerialization.data(withJSONObject: envelope) else { return }
         data.append(0x0A)
         let client = ClaudeCodeSocketClient()
-        if client.connect(path: route.socketPath, timeout: 0.35),
-           client.send(data, timeout: 0.5) {
-            _ = client.readLine(until: Date().addingTimeInterval(0.5))
+        guard client.connect(path: route.socketPath, timeout: awaitsDecision ? 0.5 : 0.35),
+              client.send(data, timeout: awaitsDecision ? 1.0 : 0.5) else {
+            return
+        }
+        guard let ack = client.readLine(until: Date().addingTimeInterval(awaitsDecision ? 2.0 : 0.5)),
+              ack["eventID"] as? String == eventID,
+              ack["accepted"] as? Bool == true else {
+            return
+        }
+        guard awaitsDecision, ack["pending"] as? Bool == true else {
+            return
+        }
+
+        let timeout = min(max(route.decisionTimeoutSeconds ?? 120, 5), 120)
+        guard let reply = client.readLine(until: Date().addingTimeInterval(timeout)),
+              reply["eventID"] as? String == eventID,
+              let decisionObj = reply["decision"] as? [String: Any],
+              let decisionValue = decisionObj["decision"] as? String else {
+            return
+        }
+
+        var hookOut: [String: Any] = [:]
+        switch decisionValue {
+        case "auto_approve":
+            hookOut["decision"] = "auto_approve"
+        case "deny":
+            hookOut["decision"] = "deny"
+            if let reason = decisionObj["reason"] as? String, !reason.isEmpty {
+                hookOut["reason"] = String(reason.prefix(16_384))
+            }
+        default:
+            hookOut["decision"] = "allow"
+        }
+
+        if JSONSerialization.isValidJSONObject(hookOut),
+           var encoded = try? JSONSerialization.data(withJSONObject: hookOut) {
+            encoded.append(0x0A)
+            responseData = encoded
         }
     }
 }

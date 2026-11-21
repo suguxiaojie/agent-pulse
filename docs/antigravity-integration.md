@@ -20,13 +20,14 @@ Agent Pulse 支持在同一套监控中心、菜单栏玻璃面板与灵动岛�
 - **全局 Hook（`~/.gemini/config/hooks.json`）**：
   - 首次写入前自动备份 `hooks.json.codex-pulse-backup`。
   - 仅管理顶层命名键 `"codex-pulse"`，保留用户及其他插件的全部命名 Hook；停用时仅移除 `"codex-pulse"`。
-  - **不注册 `PreToolUse`**：Antigravity 的 `PreToolUse` 若返回 `{}` 或 `"allow"` 可能绕过客户端原有的交互审批提示，因此 Pulse 仅挂载非权限覆盖型生命周期事件（`SessionStart`、`PreInvocation`、`PostInvocation`、`PostToolUse`、`Stop`），严格遵循「不自动批准」原则。
-  - **Fail-Closed 安全兜底**：Antigravity Hook 同步执行且要求合法 JSON 输出。`ClaudePulseHelper` 在 `--antigravity-hook` 模式下无论配置缺失、断线或输入异常，均保证对 `Stop` 输出 `{"decision":"stop"}`、对其余事件输出 `{}`，绝不阻塞客户端执行循环。
+  - **可选 `PreToolUse` 灵动岛审批与提问回答**：开启「灵动岛审批与提问回答」时注册受控 `PreToolUse` 匹配器，结合客户端本地策略（CLI 的 `always-proceed`、桌面端的 `Turbo` 及工作区内常规读写均毫秒级放行不打扰）仅在真正需要确认的工具调用或 `ask_question` 多选／输入提问时唤醒灵动岛卡片；关闭该开关时不注册 `PreToolUse`。
+  - **Fail-Safe 安全兜底（严禁静默自动批准）**：`ClaudePulseHelper` 在 `--antigravity-hook` 模式下无论配置缺失、断线、2 分钟等待超时或点击「在原客户端处理」，均保证对 `PreToolUse` 输出 `{"decision":"allow"}`（交回 Antigravity 自身权限引擎处理，绝不越权自动批准）、对 `Stop` 输出 `{"decision":"stop"}`、对其余事件输出 `{}`。仅当用户在灵动岛明确点击「批准一次」时才返回 `{"decision":"auto_approve"}`。
 - **CLI 状态栏（`~/.gemini/antigravity-cli/settings.json`）**：
   - 首次写入前自动备份 `settings.json.codex-pulse-backup` 并保持原有文件权限（如 `0600`）。
   - 若已有自定义 `statusLine`，先将其保存至私有通道目录并在每次运行中原样转发标准输入与输出；关闭采集或停用接入时完整恢复原 `statusLine`。
-- **交互提问与审批回退**：
-  - 当检测到 `ask_question` 待回复状态时，灵动岛自动切为高优「待回复」焦点，并提供按来源精准跳转的按钮（「在 Antigravity 中处理」「在 Antigravity IDE 中处理」或「回终端处理」），所有交互回答与权限批准均在原客户端完成。
+- **灵动岛交互提问与工具审批**：
+  - **`ask_question` 提问回答**：支持在灵动岛直接单选、多选或自由输入回答；用户提交后通过 `PreToolUse` 将确认答复直接注入当前轮次继续执行，避免原终端／桌面端重复弹窗；点击回原客户端或超时则放行交由原客户端原生弹窗处理。
+  - **工具权限审批**：支持在灵动岛执行「批准一次」（`auto_approve`）、「拒绝」（`deny`）、查看完整参数 JSON 详情或一键切回原客户端（`Antigravity`、`Antigravity IDE` 或终端）处理。
 
 ## 验证入口
 

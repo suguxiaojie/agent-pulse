@@ -14,6 +14,7 @@ swiftc -swift-version 5 -parse-as-library -lsqlite3 \
   Sources/CodexNotchMonitor/ClaudeCodePricing.swift \
   Sources/CodexNotchMonitor/ClaudeCodeBridge.swift \
   Sources/CodexNotchMonitor/AntigravityData.swift \
+  Sources/CodexNotchMonitor/AntigravityPermissionRequest.swift \
   Sources/CodexNotchMonitor/AntigravityScanner.swift \
   Sources/CodexNotchMonitor/AntigravityInstaller.swift \
   Tests/AntigravityTests.swift \

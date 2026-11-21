@@ -184,11 +184,13 @@ struct ActivityIslandApprovalCard: View {
                 HStack(spacing: 7) {
                     if interaction.submitted && result == nil { ProgressView().controlSize(.small) }
                     if content.provider == "Claude Code" {
-                        ClaudeMarkShape().fill(Color(red: 0.851, green: 0.467, blue: 0.341)).frame(width: 15, height: 15)
+                        ProviderBrandIcon(brand: .claude, size: 15)
+                    } else if content.provider == "Antigravity" {
+                        ProviderBrandIcon(brand: .antigravity, size: 15)
                     } else if content.provider == "Grok CLI" {
-                        Image(systemName: "sparkle").font(.system(size: 14)).accessibilityHidden(true)
-                    } else if let icon = ActivityIslandPreviewAssets.codexIcon {
-                        Image(nsImage: icon).resizable().scaledToFit().frame(width: 15, height: 15)
+                        ProviderBrandIcon(brand: .grok, size: 15)
+                    } else {
+                        ProviderBrandIcon(brand: .codex, size: 15)
                     }
                     Text(content.title).font(FloatingSurfaceTypography.control)
                     Spacer()

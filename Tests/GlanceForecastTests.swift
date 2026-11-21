@@ -155,6 +155,11 @@ enum GlanceForecastTests {
             .init(date: yesterday, label: "二", value: 0, isPeak: false)]
         check(GlanceDayStrip.costTotalText(moneyBuckets, unpricedDates: [yesterday]) == "≥ $1,862.4", "grouped lower bound")
         check(GlanceDayStrip.costDetailValue(moneyBuckets[0], unpricedDates: []) == "$1,862.4", "grouped tooltip amount")
+        check(GlanceDayStrip.metricCardCostText(nil) == "—", "missing metric card cost")
+        check(GlanceDayStrip.metricCardCostText(0) == "$0", "zero metric card cost")
+        check(GlanceDayStrip.metricCardCostText(21.42) == "$21.4", "sub-thousand metric card cost keeps one decimal")
+        check(GlanceDayStrip.metricCardCostText(21.42, lowerBound: true) == "≥$21.4", "metric card lower bound prefix")
+        check(GlanceDayStrip.metricCardCostText(1_240) == "$1.2K", "thousand metric card cost compacts")
         providerTests()
         print("Glance forecast tests passed (\(checks) checks)")
     }
@@ -208,6 +213,7 @@ enum GlanceForecastTests {
             check(strip.count == 7 && strip.prefix(5).allSatisfy { $0.value == 0 }, "Claude sparse days filled: \(zone)")
             check(strip.last?.value == 10 && strip.last?.label == "今", "Claude today position: \(zone)")
             check(projected.todayTokens == 10 && projected.monthlyTokens == 15 && projected.lifetimeTokens == 500, "Claude token scopes")
+            check(projected.todayCost == nil, "unpriced today cost remains nil")
             check(projected.unpricedDates == [local], "Claude unpriced date marker")
             let costStrip = GlanceDayStrip.buckets(samples: projected.costSamples, now: now, calendar: calendar)
             check(costStrip.last?.value == 0, "unknown cost day has zero numeric height")

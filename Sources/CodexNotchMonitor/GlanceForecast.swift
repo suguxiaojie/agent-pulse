@@ -126,6 +126,14 @@ enum GlanceDayStrip {
         return amount == "0.0" ? "$0" : "$" + amount
     }
 
+    static func metricCardCostText(_ value: Double?, lowerBound: Bool = false) -> String {
+        guard let value, value.isFinite, value >= 0 else { return "—" }
+        let prefix = (lowerBound && value > 0) ? "≥" : ""
+        if value >= 1_000 { return prefix + costText(value) }
+        if value >= 100 { return prefix + "$" + String(format: "%.0f", value) }
+        return prefix + fullCostText(value)
+    }
+
     static func tokenText(_ value: Double) -> String {
         CountFormatter.chart(value)
     }
@@ -177,6 +185,7 @@ struct GlanceClaudeSnapshot {
     let costSamples: [GlanceDayStrip.Sample]
     let unpricedDates: Set<Date>
     let todayTokens: Int64
+    let todayCost: Double?
     let monthlyTokens: Int64
     let lifetimeTokens: Int64?
     let updatedAt: Date?
@@ -236,6 +245,14 @@ struct GlanceClaudeSnapshot {
             }
         }
         todayTokens = sum(days.filter { $0.0 == today }.map { $0.1 })
+        let todayEntries = days.filter { $0.0 == today }
+        if !usageReady {
+            todayCost = nil
+        } else if todayEntries.contains(where: { $0.2 == nil }) {
+            todayCost = nil
+        } else {
+            todayCost = todayEntries.compactMap { $0.2 }.reduce(0.0, +)
+        }
         monthlyTokens = sum(days.filter { $0.0 >= lower }.map { $0.1 })
         lifetimeTokens = usage.map { max(0, $0.lifetimeTokens) }
         updatedAt = [usage?.updatedAt, statusLineEnabled ? limits?.capturedAt : nil].compactMap { $0 }.max()

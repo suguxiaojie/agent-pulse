@@ -377,93 +377,64 @@ struct GrokGlanceContent: View {
             if showQuota {
                 TimelineView(.periodic(from: .now, by: 60)) { context in
                     let displayNow = GrokDisplayClock.now(sampled: context.date)
-                    VStack(alignment: .leading, spacing: 7) {
-                        if let quota = runtime.quota, quota.isAvailable(at: displayNow) {
-                            let old = runtime.quotaFailed || quota.isStale(at: displayNow)
-                            let durationMinutes: Int? = {
-                                if let start = quota.startsAt, let end = quota.resetsAt, end > start {
-                                    return max(1, Int(end.timeIntervalSince(start) / 60))
+                    if let quota = runtime.quota, quota.isAvailable(at: displayNow) {
+                        let old = runtime.quotaFailed || quota.isStale(at: displayNow)
+                        let durationMinutes: Int? = {
+                            if let start = quota.startsAt, let end = quota.resetsAt, end > start {
+                                return max(1, Int(end.timeIntervalSince(start) / 60))
+                            }
+                            if quota.periodType == "USAGE_PERIOD_TYPE_WEEKLY" { return 10_080 }
+                            if quota.periodType == "USAGE_PERIOD_TYPE_MONTHLY" { return 43_200 }
+                            return nil
+                        }()
+                        let rlWindow = RateLimitWindow(
+                            usedPercent: Int(quota.usedPercent.rounded()),
+                            windowDurationMinutes: durationMinutes,
+                            resetsAt: quota.resetsAt
+                        )
+                        let forecast = QuotaPaceForecast(window: rlWindow, now: displayNow)
+                        let copy = forecast.copy(resetsAt: quota.resetsAt, now: displayNow)
+
+                        GlanceHeroQuotaCard(
+                            title: quota.title,
+                            remainingPercent: quota.remainingPercent,
+                            primaryCopy: copy.primary,
+                            secondaryCopy: copy.secondary + observationSuffix(old: old, capturedAt: quota.capturedAt),
+                            weatherColor: weatherColor,
+                            footerLeft: quota.sharedPool == true ? "统一共享额度池" : nil,
+                            footerRight: quota.prepaidCents.map { String(format: "预付 $%.2f", Double($0) / 100) },
+                            warningNote: runtime.quotaFailed ? runtime.quotaStatus : nil,
+                            isStale: old
+                        ) {
+                            if showsInlinePlanBadge, let plan = quota.plan {
+                                HStack(spacing: 4) {
+                                    Circle()
+                                        .fill(old ? Color.orange.opacity(0.88) : Color.green.opacity(0.90))
+                                        .frame(width: 5, height: 5)
+                                    Text(plan)
+                                        .font(.system(size: 9, weight: .medium))
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.82)
                                 }
-                                if quota.periodType == "USAGE_PERIOD_TYPE_WEEKLY" { return 10_080 }
-                                if quota.periodType == "USAGE_PERIOD_TYPE_MONTHLY" { return 43_200 }
-                                return nil
-                            }()
-                            let rlWindow = RateLimitWindow(
-                                usedPercent: Int(quota.usedPercent.rounded()),
-                                windowDurationMinutes: durationMinutes,
-                                resetsAt: quota.resetsAt
-                            )
-                            let forecast = QuotaPaceForecast(window: rlWindow, now: displayNow)
-                            let copy = forecast.copy(resetsAt: quota.resetsAt, now: displayNow)
-
-                            HStack(spacing: 5) {
-                                Text(quota.title)
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(secondaryText)
-                                    .lineLimit(1)
-                                Spacer(minLength: 0)
-                                if showsInlinePlanBadge, let plan = quota.plan {
-                                    HStack(spacing: 4) {
-                                        Circle()
-                                            .fill(old ? Color.orange.opacity(0.88) : Color.green.opacity(0.90))
-                                            .frame(width: 5, height: 5)
-                                        Text(plan)
-                                            .font(.system(size: 9, weight: .medium))
-                                            .lineLimit(1)
-                                            .minimumScaleFactor(0.82)
-                                    }
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 5)
-                                    .background(FloatingSurfaceTheme.chipFill(colorScheme), in: Capsule())
-                                }
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 4)
+                                .background(FloatingSurfaceTheme.chipFill(colorScheme), in: Capsule())
                             }
-
-                            HStack(alignment: .firstTextBaseline, spacing: 2) {
-                                Text("\(quota.remainingPercent)")
-                                    .font(.system(size: 64, weight: .semibold, design: .rounded))
-                                    .monospacedDigit()
-                                    .contentTransition(.numericText())
-                                Text("%")
-                                    .font(.system(size: 27, weight: .medium, design: .rounded))
-                                    .foregroundStyle(secondaryText)
-                            }
-                            .glanceReadableText()
-                            .opacity(old ? 0.58 : 1)
-                            .accessibilityLabel((old ? "上次观测，非当前。" : "") + "剩余 \(quota.remainingPercent)%")
-
-                            Text(copy.primary)
-                                .font(.system(size: 12.5, weight: .medium))
-                                .glanceReadableText()
-                            Text(copy.secondary + observationSuffix(old: old, capturedAt: quota.capturedAt))
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(tertiaryText)
-
-                            if quota.sharedPool == true {
-                                Text("统一共享额度池 · 含其他 xAI 产品用量")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(secondaryText)
-                                    .lineLimit(1)
-                            }
-                            if runtime.quotaFailed {
-                                Text(runtime.quotaStatus)
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.orange)
-                                    .lineLimit(1)
-                            }
-                        } else {
-                            Text("Grok 额度")
-                                .font(FloatingSurfaceTypography.section)
-                            Text(runtime.quotaStatus == "官方额度已同步"
-                                 ? (runtime.quota?.resetsAt.map { $0 <= displayNow } == true
+                        }
+                    } else {
+                        GlanceEmptyQuotaCard(
+                            title: "Grok 额度",
+                            message: runtime.quotaStatus == "官方额度已同步"
+                                ? (runtime.quota?.resetsAt.map { $0 <= displayNow } == true
                                     ? "额度周期已结束，等待重新查询"
                                     : "额度暂不可用，等待重新查询")
-                                 : runtime.quotaStatus)
-                                .font(FloatingSurfaceTypography.label)
-                                .foregroundStyle(tertiaryText)
+                                : runtime.quotaStatus
+                        ) {
+                            EmptyView()
+                        } action: {
+                            EmptyView()
                         }
                     }
-                    .frame(maxWidth: .infinity, minHeight: 156, alignment: .leading)
-                    .padding(.vertical, 6)
                 }
             }
             if showCost || showActivity {
@@ -485,14 +456,7 @@ struct GrokGlanceContent: View {
                     unpricedHelpText: "Grok 本地日志包含未附带完整美分计费的记录，对应日期标记为金额未知。"
                 )
             }
-            if runtime.usage != nil || (showCreditBalance && runtime.quota?.prepaidCents != nil) {
-                dataBlocks
-            } else if !showCost && !showActivity {
-                Text("正在统计 Grok 用量…")
-                    .font(FloatingSurfaceTypography.label)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .weatherModule()
-            }
+            dataBlocks
         }
     }
 
@@ -500,25 +464,30 @@ struct GrokGlanceContent: View {
     private var dataBlocks: some View {
         let today = Calendar.current.startOfDay(for: now)
         let lower = Calendar.current.date(byAdding: .day, value: -29, to: today)!
-        let todayTokens = runtime.usage?.days.first { $0.date == today }?.tokens ?? 0
+        let todayDay = runtime.usage?.days.first { $0.date == today }
+        let todayTokens = todayDay?.tokens ?? 0
+        let todayCost: Double? = {
+            guard runtime.usage != nil else { return nil }
+            guard let todayDay else { return 0 }
+            return todayDay.cost
+        }()
         let monthTokens = (runtime.usage?.days ?? [])
             .filter { $0.date >= lower && $0.date <= today }
             .reduce(0) { GrokJSON.add($0, $1.tokens) }
         let prepaid = showCreditBalance ? runtime.quota?.prepaidCents : nil
 
-        if prepaid != nil || showDaily || showMonth {
+        if prepaid != nil || showCost || showDaily || showMonth {
             HStack(spacing: 6) {
                 if let cents = prepaid {
                     dataBlock("预付余额", value: String(format: "$%.2f", Double(cents) / 100))
+                } else if showCost {
+                    dataBlock("今日成本", value: GlanceDayStrip.metricCardCostText(todayCost))
                 }
                 if showDaily {
                     dataBlock("今日 Token", value: runtime.usage == nil ? "—" : GlanceDayStrip.tokenText(Double(todayTokens)))
                 }
                 if showMonth {
                     dataBlock("30 日 Token", value: runtime.usage == nil ? "—" : GlanceDayStrip.tokenText(Double(monthTokens)))
-                }
-                if prepaid == nil {
-                    dataBlock("累计 Token", value: runtime.usage.map { GlanceDayStrip.tokenText(Double($0.lifetimeTokens)) } ?? "—")
                 }
             }
         }

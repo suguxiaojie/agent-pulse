@@ -84,16 +84,21 @@ struct ActivityIslandUsageDashboard: View {
                     } else {
                         // Reset navigation hides this whole page without moving its ticket anchor.
                         IslandUsageProviderSwitch(model: model)
+                            .environment(\.islandFullWidthProviderSwitch, true)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        if let status = p.statusLine {
-                            Text(status).font(FloatingSurfaceTypography.metadata).foregroundStyle(secondary)
-                                .lineLimit(1).help(status).frame(maxWidth: .infinity, alignment: .leading)
-                        }
+                        let statusHint: String? = {
+                            if let status = p.statusLine { return status }
+                            return nil
+                        }()
+                        let resetCount: Int? = {
+                            if case .codex(_, _, let count) = p.source { return count }
+                            return nil
+                        }()
                         HStack(spacing: 10) {
-                            IslandUsageQuotaRow(quotas: p.quotas, now: now)
+                            IslandUsageQuotaRow(quotas: p.quotas, now: now, statusHint: statusHint, resetCount: resetCount)
                             IslandUsageSourceCard(source: p.source, playbackVisible: model.playbackVisible,
                                 flightActive: flightActive, onReset: { if p.supportsReset { navigateReset(true) } })
-                                .frame(width: min(204, max(168, (width - 56) * 0.327)))
+                                .frame(width: min(214, max(172, (width - 56) * 0.355)))
                         }.fixedSize(horizontal: false, vertical: true)
                         IslandUsageMetricStrip(metrics: p.metrics)
                         IslandUsageTrendCard(presentation: p, width: width, now: now, mode: $mode,

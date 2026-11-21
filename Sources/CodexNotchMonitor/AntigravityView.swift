@@ -75,15 +75,29 @@ struct AntigravityView: View {
             SettingsRow(
                 symbol: "point.3.connected.trianglepath.dotted",
                 title: "三端实时生命周期 Hook",
-                detail: "在 ~/.gemini/config/hooks.json 管理专属键，同时覆盖 2.0 桌面端、IDE 与 CLI，不安装 PreToolUse、不自动批准。"
+                detail: "在 ~/.gemini/config/hooks.json 管理专属键，同时覆盖 2.0 桌面端、IDE 与 CLI。"
             ) {
                 Toggle("三端实时 Hook", isOn: Binding(
                     get: { runtime.hooksEnabled },
-                    set: { runtime.configure(enabled: true, hooks: $0, statusLine: runtime.statusLineEnabled) }
+                    set: { runtime.configure(enabled: true, hooks: $0, approvals: runtime.approvalsEnabled, statusLine: runtime.statusLineEnabled) }
                 ))
                 .labelsHidden()
                 .toggleStyle(PanelSettingsToggleStyle(onTitle: "开启", offTitle: "关闭"))
                 .disabled(!runtime.enabled || runtime.configuring)
+            }
+            SettingsRowDivider()
+            SettingsRow(
+                symbol: "checkmark.shield",
+                title: "灵动岛审批与提问回答",
+                detail: "在灵动岛直接回答 ask_question 多选／输入提问，并对需要审查的工具调用执行「批准一次／拒绝」；超时或失联自动交回原客户端处理。"
+            ) {
+                Toggle("灵动岛审批与提问", isOn: Binding(
+                    get: { runtime.approvalsEnabled },
+                    set: { runtime.configure(enabled: true, hooks: runtime.hooksEnabled, approvals: $0, statusLine: runtime.statusLineEnabled) }
+                ))
+                .labelsHidden()
+                .toggleStyle(PanelSettingsToggleStyle(onTitle: "开启", offTitle: "关闭"))
+                .disabled(!runtime.enabled || !runtime.hooksEnabled || runtime.configuring)
             }
             SettingsRowDivider()
             SettingsRow(
@@ -93,13 +107,13 @@ struct AntigravityView: View {
             ) {
                 Toggle("采集官方额度", isOn: Binding(
                     get: { runtime.statusLineEnabled },
-                    set: { runtime.configure(enabled: true, hooks: runtime.hooksEnabled, statusLine: $0) }
+                    set: { runtime.configure(enabled: true, hooks: runtime.hooksEnabled, approvals: runtime.approvalsEnabled, statusLine: $0) }
                 ))
                 .labelsHidden()
                 .toggleStyle(PanelSettingsToggleStyle(onTitle: "开启", offTitle: "关闭"))
                 .disabled(!runtime.enabled || runtime.configuring)
             }
-            Text("首次启用前自动备份 hooks.json 与 settings.json，仅管理 Pulse 自己的配置项；停用完整恢复原状态栏并移除专属 Hook。不读取账号凭据或邮箱；交互提问与权限确认均在原客户端完成。")
+            Text("首次启用前自动备份 hooks.json 与 settings.json，仅管理 Pulse 自己的配置项；停用完整恢复原状态栏并移除专属 Hook。不读取账号凭据或邮箱；绝不静默自动批准，失联／超时自动放行回原客户端确认。")
                 .font(MonitorDesktopTypography.metadata)
                 .foregroundStyle(MonitorDesktopTheme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -241,8 +255,14 @@ struct AntigravityView: View {
     private var tasksCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             MonitorCardHeader(symbol: "bolt.horizontal.circle", title: "实时任务") {
-                if !runtime.rows.isEmpty {
-                    MonitorMetaChip(ActivitySessionSnapshot.statusSummary(runtime.rows))
+                HStack(spacing: 8) {
+                    if !runtime.requests.isEmpty {
+                        Button("待确认 \(runtime.requests.count)") { runtime.showRequests() }
+                            .buttonStyle(PanelSettingsActionStyle())
+                    }
+                    if !runtime.rows.isEmpty {
+                        MonitorMetaChip(ActivitySessionSnapshot.statusSummary(runtime.rows))
+                    }
                 }
             }
             if runtime.rows.isEmpty {
@@ -352,121 +372,102 @@ struct AntigravityGlanceContent: View {
                         ? runtime.quota?.rolledOverGeminiFiveHour(at: context.date, staleCutoff: staleLimit)
                         : nil
                     let liveStale = runtime.quota?.isStale(at: context.date, threshold: staleLimit) ?? false
-                    VStack(alignment: .leading, spacing: 7) {
-                        if let primary = liveWindows.min(by: { $0.remainingPercent < $1.remainingPercent }) {
-                            let rlWindow = RateLimitWindow(
-                                usedPercent: Int(primary.usedPercent.rounded()),
-                                windowDurationMinutes: primary.durationMinutes,
-                                resetsAt: primary.resetsAt
-                            )
-                            let forecast = QuotaPaceForecast(window: rlWindow, now: context.date)
-                            let copy = forecast.copy(resetsAt: primary.resetsAt, now: context.date)
-                            HStack(spacing: 5) {
-                                Text(primary.title)
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(secondaryText)
-                                    .lineLimit(1)
-                                Spacer(minLength: 0)
-                                if showsInlinePlanBadge, let plan = runtime.quota?.resolvedPlan {
-                                    HStack(spacing: 4) {
-                                        Circle()
-                                            .fill(liveStale ? Color.orange.opacity(0.88) : Color.green.opacity(0.90))
-                                            .frame(width: 5, height: 5)
-                                        Text(plan)
-                                            .font(.system(size: 9, weight: .medium))
-                                            .lineLimit(1)
-                                            .minimumScaleFactor(0.82)
-                                    }
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 5)
-                                    .background(FloatingSurfaceTheme.chipFill(colorScheme), in: Capsule())
-                                }
-                            }
+                    if let primary = liveWindows.min(by: { $0.remainingPercent < $1.remainingPercent }) {
+                        let rlWindow = RateLimitWindow(
+                            usedPercent: Int(primary.usedPercent.rounded()),
+                            windowDurationMinutes: primary.durationMinutes,
+                            resetsAt: primary.resetsAt
+                        )
+                        let forecast = QuotaPaceForecast(window: rlWindow, now: context.date)
+                        let copy = forecast.copy(resetsAt: primary.resetsAt, now: context.date)
+                        let secondaryWindows = liveWindows.filter { $0.id != primary.id }
+                        let geminiSecondary = secondaryWindows.first { !$0.id.lowercased().contains("3p") }
+                        let partnerWindows = secondaryWindows.filter { $0.id.lowercased().contains("3p") }
+                        let limitingPartner = partnerWindows.min { $0.remainingPercent < $1.remainingPercent }
 
-                            HStack(alignment: .firstTextBaseline, spacing: 2) {
-                                Text("\(primary.remainingPercent)")
-                                    .font(.system(size: 64, weight: .semibold, design: .rounded))
-                                    .monospacedDigit()
-                                    .contentTransition(.numericText())
-                                Text("%")
-                                    .font(.system(size: 27, weight: .medium, design: .rounded))
-                                    .foregroundStyle(secondaryText)
-                            }
-                            .glanceReadableText()
-                            .opacity(liveStale ? 0.58 : 1)
-                            .accessibilityLabel((liveStale ? "上次观测，非当前。" : "") + "剩余 \(primary.remainingPercent)%")
+                        let secondaryRing: Int? = {
+                            if let gem = geminiSecondary { return gem.remainingPercent }
+                            if rolledFiveHour != nil { return 100 }
+                            return limitingPartner?.remainingPercent
+                        }()
 
-                            Text(copy.primary)
-                                .font(.system(size: 12.5, weight: .medium))
-                                .glanceReadableText()
-                            Text(copy.secondary + observationSuffix(stale: liveStale))
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(tertiaryText)
-
-                            if let rolled = rolledFiveHour {
-                                Text("\(rolled.title) 100% · 已重置（待下次对话同步）")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(secondaryText)
-                                    .lineLimit(1)
+                        let footerLeftText: String? = {
+                            if let gem = geminiSecondary {
+                                let shortTitle = gem.durationMinutes == 300 ? "5h 额度" : (gem.durationMinutes == 10_080 ? "每周额度" : gem.title)
+                                return "\(shortTitle) \(gem.remainingPercent)% · \(shortResetText(gem.resetsAt, now: context.date))"
                             }
-
-                            let secondaryWindows = liveWindows.filter { $0.id != primary.id }
-                            let partnerWindows = secondaryWindows.filter { $0.id.lowercased().contains("3p") }
-                            let collapseUnusedPartners = partnerWindows.count >= 2 && partnerWindows.allSatisfy { $0.remainingPercent == 100 }
-                            ForEach(secondaryWindows.filter { !collapseUnusedPartners || !$0.id.lowercased().contains("3p") }) { other in
-                                Text("\(other.title) \(other.remainingPercent)% · \(resetText(other.resetsAt, now: context.date))")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(secondaryText)
-                                    .lineLimit(1)
+                            if rolledFiveHour != nil {
+                                return "5h 额度 100% · 已重置"
                             }
-                            if collapseUnusedPartners {
-                                Text("合作模型额度 100% · 5 小时与每周均未使用")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(secondaryText)
-                                    .lineLimit(1)
-                            }
-
                             if let credits = runtime.quota?.aiCredits, !liveStale, runtime.quota?.useG1Credits == true {
-                                Text("AI Credits 超额兜底已开启 · 余额 \(CountFormatter.display(Int64(credits)))")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(secondaryText)
-                                    .lineLimit(1)
+                                return "AI Credits \(CountFormatter.display(Int64(credits)))"
                             }
-                        } else if let rolled = rolledFiveHour {
-                            Text(rolled.title)
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(secondaryText)
-                            HStack(alignment: .firstTextBaseline, spacing: 2) {
-                                Text("100")
-                                    .font(.system(size: 64, weight: .semibold, design: .rounded))
-                                    .monospacedDigit()
-                                Text("%")
-                                    .font(.system(size: 27, weight: .medium, design: .rounded))
-                                    .foregroundStyle(secondaryText)
+                            return nil
+                        }()
+
+                        let footerRightText: String? = {
+                            if let partner = limitingPartner {
+                                return "合作模型 \(partner.remainingPercent)%"
                             }
-                            .glanceReadableText()
-                            Text("当前 5 小时周期已重置")
-                                .font(.system(size: 12.5, weight: .medium))
-                                .glanceReadableText()
-                            Text("待下次 agy 对话同步新周期重置时间")
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(tertiaryText)
-                        } else {
-                            Text("Antigravity 额度")
-                                .font(FloatingSurfaceTypography.section)
-                            Text(!runtime.statusLineEnabled
-                                 ? "开启 CLI 状态栏后可同步 Antigravity 官方额度"
-                                 : "等待 agy CLI 下一次输出同步官方额度")
-                                .font(FloatingSurfaceTypography.label)
-                                .foregroundStyle(tertiaryText)
+                            if let credits = runtime.quota?.aiCredits, !liveStale, runtime.quota?.useG1Credits == true, footerLeftText?.hasPrefix("AI Credits") != true {
+                                return "Credits \(CountFormatter.display(Int64(credits)))"
+                            }
+                            return nil
+                        }()
+
+                        GlanceHeroQuotaCard(
+                            title: primary.title,
+                            remainingPercent: primary.remainingPercent,
+                            primaryCopy: copy.primary,
+                            secondaryCopy: copy.secondary + observationSuffix(stale: liveStale),
+                            weatherColor: weatherColor,
+                            secondaryRingPercent: secondaryRing,
+                            footerLeft: footerLeftText,
+                            footerRight: footerRightText,
+                            isStale: liveStale
+                        ) {
+                            if showsInlinePlanBadge, let plan = runtime.quota?.resolvedPlan {
+                                HStack(spacing: 4) {
+                                    Circle()
+                                        .fill(liveStale ? Color.orange.opacity(0.88) : Color.green.opacity(0.90))
+                                        .frame(width: 5, height: 5)
+                                    Text(plan)
+                                        .font(.system(size: 9, weight: .medium))
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.82)
+                                }
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 4)
+                                .background(FloatingSurfaceTheme.chipFill(colorScheme), in: Capsule())
+                            }
+                        }
+                    } else if let rolled = rolledFiveHour {
+                        GlanceHeroQuotaCard(
+                            title: rolled.title,
+                            remainingPercent: 100,
+                            primaryCopy: "当前 5 小时周期已重置",
+                            secondaryCopy: "待下次 agy 对话同步新周期重置时间",
+                            weatherColor: weatherColor
+                        ) {
+                            EmptyView()
+                        }
+                    } else {
+                        GlanceEmptyQuotaCard(
+                            title: "Antigravity 额度",
+                            message: !runtime.statusLineEnabled
+                                ? "开启 CLI 状态栏后可同步 Antigravity 官方额度"
+                                : "等待 agy CLI 下一次输出同步官方额度"
+                        ) {
+                            EmptyView()
+                        } action: {
                             if !runtime.statusLineEnabled, let onOpenCenter {
-                                Button("打开 Antigravity 设置") { onOpenCenter() }
+                                Button("打开设置 ›") { onOpenCenter() }
+                                    .font(.system(size: 9.5, weight: .semibold))
+                                    .foregroundStyle(weatherColor)
                                     .buttonStyle(FloatingSurfaceButtonStyle())
                             }
                         }
                     }
-                    .frame(maxWidth: .infinity, minHeight: 156, alignment: .leading)
-                    .padding(.vertical, 6)
                 }
             }
 
@@ -496,46 +497,54 @@ struct AntigravityGlanceContent: View {
                 )
             }
 
-            if runtime.usage != nil {
-                dataBlocks(stale: stale)
-            } else if !showCost && !showActivity {
-                Text("正在统计 Antigravity 用量…")
-                    .font(FloatingSurfaceTypography.label)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .weatherModule()
-            }
+            dataBlocks(stale: stale)
         }
     }
 
     @ViewBuilder
     private func dataBlocks(stale: Bool) -> some View {
+        let ready = runtime.usage != nil
         let today = Calendar.current.startOfDay(for: now)
         let lower = Calendar.current.date(byAdding: .day, value: -29, to: today)!
-        let todayTokens = runtime.usage?.days.first { $0.date == today }?.tokens ?? 0
+        let todayDay = runtime.usage?.days.first { $0.date == today }
+        let todayTokens = todayDay?.tokens ?? 0
+        let todayCost: Double? = {
+            guard runtime.usage != nil else { return nil }
+            guard let todayDay else { return 0 }
+            return todayDay.cost
+        }()
+        let todayCostLowerBound = (todayDay?.hasUnpriced == true) && ((todayDay?.knownCost ?? 0) > 0)
         let monthTokens = (runtime.usage?.days ?? [])
             .filter { $0.date >= lower && $0.date <= today }
             .reduce(0) { AntigravityMath.add($0, $1.tokens) }
         let visibleCredits = (showCreditBalance && runtime.statusLineEnabled && !stale) ? runtime.quota?.aiCredits : nil
 
-        if visibleCredits != nil || showDaily || showMonth {
+        if visibleCredits != nil || showCost || showDaily || showMonth {
             HStack(spacing: 6) {
                 if let credits = visibleCredits {
                     dataBlock("AI Credits", value: CountFormatter.display(Int64(credits)))
+                } else if showCost {
+                    dataBlock("今日成本", value: ready ? GlanceDayStrip.metricCardCostText(todayCost, lowerBound: todayCostLowerBound) : "—")
                 }
                 if showDaily {
-                    dataBlock("今日 Token", value: GlanceDayStrip.tokenText(Double(todayTokens)))
+                    dataBlock("今日 Token", value: ready ? GlanceDayStrip.tokenText(Double(todayTokens)) : "—")
                 }
                 if showMonth {
-                    dataBlock("30 日 Token", value: GlanceDayStrip.tokenText(Double(monthTokens)))
-                }
-                if visibleCredits == nil {
-                    dataBlock(
-                        "累计 Token",
-                        value: runtime.usage.map { GlanceDayStrip.tokenText(Double($0.lifetimeTokens)) } ?? "—"
-                    )
+                    dataBlock("30 日 Token", value: ready ? GlanceDayStrip.tokenText(Double(monthTokens)) : "—")
                 }
             }
         }
+    }
+
+    private func shortResetText(_ date: Date?, now: Date) -> String {
+        guard let date else { return "未知" }
+        let seconds = max(0, Int(date.timeIntervalSince(now)))
+        let days = seconds / 86_400
+        let hours = (seconds % 86_400) / 3_600
+        let minutes = (seconds % 3_600) / 60
+        if days > 0 { return hours > 0 ? "\(days)d \(hours)h 后" : "\(days) 天后" }
+        if hours > 0 { return minutes > 0 ? "\(hours)h \(minutes)m 后" : "\(hours) 小时后" }
+        return "\(max(1, minutes)) 分钟后"
     }
 
     private func dataBlock(_ title: String, value: String) -> some View {
@@ -553,11 +562,6 @@ struct AntigravityGlanceContent: View {
         .accessibilityElement(children: .combine)
     }
 
-    private func resetText(_ date: Date?, now: Date) -> String {
-        guard let date else { return "重置时间未知" }
-        return ChineseDisplayText.spacing(QuotaResetCountdown.text(until: date, relativeTo: now))
-    }
-
     private func observationSuffix(stale: Bool) -> String {
         guard stale, let capturedAt = runtime.quota?.capturedAt else { return "" }
         let formatter = DateFormatter()
@@ -568,8 +572,85 @@ struct AntigravityGlanceContent: View {
     private var secondaryText: Color {
         FloatingSurfaceTheme.detail(colorScheme)
     }
+}
 
-    private var tertiaryText: Color {
-        FloatingSurfaceTheme.secondary(colorScheme)
+struct AntigravityRequestsView: View {
+    @ObservedObject var runtime: AntigravityRuntime
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Antigravity 待处理请求")
+                    .font(.system(size: 16, weight: .semibold))
+                Spacer()
+                Text("\(runtime.requests.count) 项等待确认")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+
+            if runtime.requests.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.secondary)
+                    Text("当前没有等待处理的 Antigravity 审批或提问")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(runtime.requests) { req in
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text(req.isQuestion ? "交互提问 · \(req.surface.displayName)" : "工具审批 · \(req.displayToolName)")
+                                        .font(.system(size: 13, weight: .semibold))
+                                    Spacer()
+                                    Text(req.surface.shortName)
+                                        .font(.system(size: 11, weight: .medium))
+                                        .padding(.horizontal, 7)
+                                        .padding(.vertical, 3)
+                                        .background(Color.secondary.opacity(0.14), in: Capsule())
+                                }
+                                if !req.cwd.isEmpty {
+                                    Text("工作区：" + req.cwd)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.secondary)
+                                }
+                                ScrollView(.horizontal, showsIndicators: true) {
+                                    Text(req.detailJSON)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .textSelection(.enabled)
+                                        .padding(10)
+                                }
+                                .frame(maxHeight: 200)
+                                .background(Color.black.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+
+                                HStack(spacing: 8) {
+                                    if !req.isQuestion {
+                                        Button("批准一次") {
+                                            runtime.respond(req.id, choice: .approveOnce)
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                    }
+                                    Button(req.isQuestion ? "取消提问" : "拒绝", role: .destructive) {
+                                        runtime.respond(req.id, choice: .deny)
+                                    }
+                                    Spacer()
+                                    Button("在 \(req.surface.displayName) 中处理") {
+                                        runtime.returnToClient(req.id)
+                                    }
+                                }
+                            }
+                            .padding(12)
+                            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                        }
+                    }
+                }
+            }
+        }
+        .padding(18)
+        .frame(minWidth: 560, minHeight: 420)
     }
 }

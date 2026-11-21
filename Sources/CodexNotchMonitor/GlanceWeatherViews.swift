@@ -62,8 +62,21 @@ struct GlanceWeatherStrip: View {
                 Text(isReady ? totalText : "—")
                     .font(.system(size: 10, weight: .semibold)).monospacedDigit()
             }
-            Text(selectedMetric.subtitle(tokenSourceLabel: tokenSourceLabel))
-                .font(.system(size: 9)).foregroundStyle(FloatingSurfaceTheme.secondary(colorScheme))
+            HStack(spacing: 4) {
+                Text(selectedMetric.subtitle(tokenSourceLabel: tokenSourceLabel))
+                    .font(.system(size: 9)).foregroundStyle(FloatingSurfaceTheme.secondary(colorScheme))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                if isCost && (!unknownModels.isEmpty || !unpricedDates.isEmpty) {
+                    Text("部分模型未计价")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                        .help(unpricedHelpText ?? (unpricedDates.isEmpty
+                              ? "当前账号日志包含未计价模型：" + unknownModels.joined(separator: "、") + "。该提示不限定于最近 7 天。"
+                              : "Claude 用量包含未计价日期；现有快照未提供这些日期的已知部分金额。"))
+                }
+            }
             if isReady {
                 HStack(alignment: .top, spacing: 0) {
                     ForEach(buckets) { bucket in
@@ -97,15 +110,14 @@ struct GlanceWeatherStrip: View {
                     .font(.system(size: 10)).lineLimit(1).minimumScaleFactor(0.7)
                     .foregroundStyle(FloatingSurfaceTheme.detail(colorScheme))
             } else {
-                Text(loadingText).font(.system(size: 10)).frame(height: 65)
-            }
-            if isCost && (!unknownModels.isEmpty || !unpricedDates.isEmpty) {
-                Text("部分模型未计价").font(.system(size: 9)).foregroundStyle(.orange)
-                    .help(unpricedHelpText ?? (unpricedDates.isEmpty
-                          ? "当前账号日志包含未计价模型：" + unknownModels.joined(separator: "、") + "。该提示不限定于最近 7 天。"
-                          : "Claude 用量包含未计价日期；现有快照未提供这些日期的已知部分金额。"))
+                Text(loadingText)
+                    .font(.system(size: 10))
+                    .foregroundStyle(FloatingSurfaceTheme.detail(colorScheme))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: 75)
             }
         }.weatherModule()
+            .frame(height: 136)
             .onDisappear { hoverClearWorkItem?.cancel() }
     }
 
@@ -147,16 +159,17 @@ struct GlanceProviderSwitch: View {
     var fullWidth: Bool = false
     var activeColor: Color? = nil
     var providerTones: [GlanceProvider: GlanceTone] = [:]
+    var providerRemaining: [GlanceProvider: Int?] = [:]
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var highlight
 
-    private func label(for provider: GlanceProvider) -> String {
+    private func label(for provider: GlanceProvider, compact: Bool) -> String {
         switch provider {
         case .codex: return "Codex"
         case .claude: return "Claude"
         case .grok: return "Grok"
-        case .antigravity: return "Antigravity"
+        case .antigravity: return compact ? "AGY" : "Antigravity"
         }
     }
 
@@ -169,64 +182,471 @@ struct GlanceProviderSwitch: View {
         }
     }
 
-    private var switchWidth: CGFloat {
-        available.contains(.antigravity) ? 146 : 128
+    private func brand(for provider: GlanceProvider) -> ProviderBrandIcon.Brand {
+        switch provider {
+        case .codex: return .codex
+        case .claude: return .claude
+        case .grok: return .grok
+        case .antigravity: return .antigravity
+        }
     }
 
-    private var controlHeight: CGFloat {
-        fullWidth ? 28 : 26
+    private var switchWidth: CGFloat {
+        available.contains(.antigravity) ? 156 : 138
     }
 
     var body: some View {
         let resolvedHighlight = activeColor ?? FloatingSurfaceTheme.accent(colorScheme)
-        let pills = HStack(spacing: 0) {
+        if fullWidth {
+            telemetryTiles(resolvedHighlight: resolvedHighlight)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("用量来源")
+        } else {
+            compactPills(resolvedHighlight: resolvedHighlight)
+                .frame(width: switchWidth, height: 28)
+                .islandGlass(Capsule(), tint: FloatingSurfaceTheme.chipFill(colorScheme), solidTint: FloatingSurfaceTheme.surface(colorScheme))
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("用量来源")
+        }
+    }
+
+    @ViewBuilder
+    private func telemetryTiles(resolvedHighlight: Color) -> some View {
+        let compactLabels = available.count >= 4
+        HStack(spacing: 5) {
             ForEach(available, id: \.self) { provider in
+                let isSelected = selection == provider
+                let tone = providerTones[provider] ?? .calm
+                let warningTone: GlanceTone? = tone == .calm ? nil : tone
+                let remaining = providerRemaining[provider] ?? nil
+                let valueColor: Color = {
+                    if tone == .critical {
+                        return Color(red: 0.988, green: 0.490, blue: 0.465)
+                    }
+                    if tone == .tight {
+                        return .orange
+                    }
+                    return isSelected
+                        ? FloatingSurfaceTheme.primary(colorScheme)
+                        : FloatingSurfaceTheme.primary(colorScheme).opacity(0.80)
+                }()
+                let barColor: Color = {
+                    if tone == .critical { return GlanceTone.critical.color }
+                    if tone == .tight { return GlanceTone.tight.color }
+                    if isSelected { return resolvedHighlight }
+                    return colorScheme == .dark ? Color.white.opacity(0.38) : Color.black.opacity(0.28)
+                }()
+
+                Button {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { selection = provider }
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 3) {
+                            Text(label(for: provider, compact: compactLabels))
+                                .font(.system(size: 9.5, weight: isSelected ? .semibold : .medium))
+                                .foregroundStyle(
+                                    isSelected
+                                        ? FloatingSurfaceTheme.primary(colorScheme)
+                                        : FloatingSurfaceTheme.secondary(colorScheme)
+                                )
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.80)
+                            Spacer(minLength: 2)
+                            ProviderBrandIcon(
+                                brand: brand(for: provider),
+                                size: 11.5,
+                                active: isSelected
+                            )
+                        }
+
+                        Text(remaining.map { "\($0)%" } ?? "—")
+                            .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(valueColor)
+                            .lineLimit(1)
+
+                        GeometryReader { proxy in
+                            let fraction: CGFloat = {
+                                guard let pct = remaining else { return 0 }
+                                if pct <= 0 { return 0.06 }
+                                return min(1.0, max(0.06, CGFloat(pct) / 100.0))
+                            }()
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(colorScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.08))
+                                if remaining != nil {
+                                    Capsule()
+                                        .fill(barColor)
+                                        .frame(width: max(3, proxy.size.width * fraction))
+                                }
+                            }
+                        }
+                        .frame(height: 2.2)
+                    }
+                    .padding(.horizontal, 6.5)
+                    .padding(.vertical, 5.5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background {
+                        let shape = RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        if isSelected {
+                            shape
+                                .fill(
+                                    LinearGradient(
+                                        colors: [
+                                            resolvedHighlight.opacity(colorScheme == .dark ? 0.22 : 0.16),
+                                            resolvedHighlight.opacity(colorScheme == .dark ? 0.08 : 0.05)
+                                        ],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
+                                .overlay {
+                                    shape.strokeBorder(resolvedHighlight.opacity(0.46), lineWidth: 0.8)
+                                }
+                                .matchedGeometryEffect(id: "glance-provider", in: highlight)
+                        } else {
+                            shape
+                                .fill(colorScheme == .dark ? Color.white.opacity(0.048) : Color.black.opacity(0.04))
+                                .overlay(alignment: .top) {
+                                    Rectangle()
+                                        .fill(Color.white.opacity(colorScheme == .dark ? 0.11 : 0.25))
+                                        .frame(height: 0.5)
+                                        .padding(.horizontal, 8)
+                                        .accessibilityHidden(true)
+                                }
+                                .overlay {
+                                    if let warningTone {
+                                        shape.strokeBorder(warningTone.color.opacity(0.26), lineWidth: 0.6)
+                                    }
+                                }
+                        }
+                    }
+                    .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                }
+                .buttonStyle(FloatingSurfaceButtonStyle())
+                .help(
+                    accessibilityName(for: provider)
+                        + (remaining.map { " · 剩余 \($0)%" } ?? "")
+                        + (warningTone == .critical ? " · 额度告急" : (warningTone == .tight ? " · 额度偏紧" : ""))
+                )
+                .accessibilityLabel(accessibilityName(for: provider))
+                .accessibilityValue(
+                    (isSelected ? "已选择" : "未选择")
+                        + (remaining.map { "，剩余 \($0)%" } ?? "")
+                        + (warningTone == .critical ? "，额度告急" : (warningTone == .tight ? "，额度偏紧" : ""))
+                )
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private func compactPills(resolvedHighlight: Color) -> some View {
+        HStack(spacing: 0) {
+            ForEach(available, id: \.self) { provider in
+                let isSelected = selection == provider
                 let warningTone = providerTones[provider].flatMap { $0 == .calm ? nil : $0 }
                 Button {
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { selection = provider }
                 } label: {
-                    HStack(spacing: 3.5) {
-                        if let warningTone {
-                            Circle()
-                                .fill(warningTone.color)
-                                .frame(width: 4.5, height: 4.5)
-                                .accessibilityHidden(true)
-                        }
-                        Text(label(for: provider))
-                            .font(.system(size: fullWidth ? 10.5 : 10, weight: selection == provider ? .semibold : .medium))
+                    HStack(spacing: 4) {
+                        ProviderBrandIcon(brand: brand(for: provider), size: 11, active: isSelected)
+                        Text(label(for: provider, compact: false))
+                            .font(.system(size: 10, weight: isSelected ? .semibold : .medium))
                             .lineLimit(1)
-                            .minimumScaleFactor(0.78)
+                            .minimumScaleFactor(0.82)
                     }
-                    .padding(.horizontal, 4)
-                    .frame(maxWidth: .infinity).frame(height: controlHeight)
-                    .foregroundStyle(selection == provider ? FloatingSurfaceTheme.primary(colorScheme) : FloatingSurfaceTheme.secondary(colorScheme))
+                    .padding(.horizontal, 6)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 22)
+                    .foregroundStyle(isSelected ? FloatingSurfaceTheme.primary(colorScheme) : FloatingSurfaceTheme.secondary(colorScheme))
                     .background {
-                        if selection == provider {
+                        if isSelected {
                             Capsule()
-                                .fill(resolvedHighlight.opacity(0.22))
+                                .fill(resolvedHighlight.opacity(0.24))
                                 .overlay {
-                                    Capsule().strokeBorder(resolvedHighlight.opacity(0.32), lineWidth: 0.5)
+                                    Capsule().strokeBorder(resolvedHighlight.opacity(0.42), lineWidth: 0.5)
                                 }
-                                .matchedGeometryEffect(id: "glance-provider", in: highlight)
+                                .matchedGeometryEffect(id: "glance-provider-compact", in: highlight)
                         }
                     }
                     .contentShape(Capsule())
-                }.buttonStyle(FloatingSurfaceButtonStyle())
-                    .help(accessibilityName(for: provider) + (warningTone == .critical ? " · 额度告急" : (warningTone == .tight ? " · 额度偏紧" : "")))
-                    .accessibilityLabel(accessibilityName(for: provider))
-                    .accessibilityValue((selection == provider ? "已选择" : "未选择") + (warningTone == .critical ? "，额度告急" : (warningTone == .tight ? "，额度偏紧" : "")))
-                    .accessibilityAddTraits(selection == provider ? .isSelected : [])
+                }
+                .buttonStyle(FloatingSurfaceButtonStyle())
+                .help(accessibilityName(for: provider) + (warningTone == .critical ? " · 额度告急" : (warningTone == .tight ? " · 额度偏紧" : "")))
+                .accessibilityLabel(accessibilityName(for: provider))
+                .accessibilityValue((isSelected ? "已选择" : "未选择") + (warningTone == .critical ? "，额度告急" : (warningTone == .tight ? "，额度偏紧" : "")))
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }
-        Group {
-            if fullWidth {
-                pills.frame(maxWidth: .infinity).frame(height: controlHeight)
+        .padding(3)
+    }
+}
+
+struct GlanceConcentricQuotaRing: View {
+    let primaryFraction: Double
+    let secondaryFraction: Double?
+    let primaryColor: Color
+    var secondaryColor: Color = Color(red: 52 / 255, green: 211 / 255, blue: 153 / 255)
+    var dimmed: Bool = false
+
+    private func clamped(_ value: Double) -> Double {
+        guard value.isFinite else { return 0 }
+        return min(1, max(0, value))
+    }
+
+    var body: some View {
+        let outer = clamped(primaryFraction)
+        let inner = secondaryFraction.map(clamped)
+        ZStack {
+            Circle()
+                .stroke(Color.white.opacity(0.10), lineWidth: 5)
+                .frame(width: 52, height: 52)
+            Circle()
+                .trim(from: 0, to: outer)
+                .stroke(primaryColor, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                .frame(width: 52, height: 52)
+                .rotationEffect(.degrees(-90))
+
+            Circle()
+                .stroke(Color.white.opacity(0.09), lineWidth: 4.5)
+                .frame(width: 36, height: 36)
+            if let inner {
+                Circle()
+                    .trim(from: 0, to: inner)
+                    .stroke(secondaryColor, style: StrokeStyle(lineWidth: 4.5, lineCap: .round))
+                    .frame(width: 36, height: 36)
+                    .rotationEffect(.degrees(-90))
             } else {
-                pills.frame(width: switchWidth, height: controlHeight)
+                Circle()
+                    .trim(from: 0, to: outer)
+                    .stroke(primaryColor.opacity(0.36), style: StrokeStyle(lineWidth: 4.5, lineCap: .round))
+                    .frame(width: 36, height: 36)
+                    .rotationEffect(.degrees(-90))
             }
         }
-        .islandGlass(Capsule(), tint: FloatingSurfaceTheme.chipFill(colorScheme), solidTint: FloatingSurfaceTheme.surface(colorScheme))
-        .accessibilityElement(children: .contain).accessibilityLabel("用量来源")
+        .frame(width: 62, height: 62)
+        .opacity(dimmed ? 0.56 : 1)
+        .accessibilityHidden(true)
+    }
+}
+
+struct GlanceHeroQuotaCard<Badge: View, FooterTrailing: View>: View {
+    static var unifiedHeight: CGFloat { 138 }
+
+    let title: String
+    let remainingPercent: Int
+    let primaryCopy: String
+    let secondaryCopy: String
+    let weatherColor: Color
+    var secondaryRingPercent: Int? = nil
+    var footerLeft: String? = nil
+    var footerRight: String? = nil
+    var warningNote: String? = nil
+    var isStale: Bool = false
+    @ViewBuilder var inlineBadge: () -> Badge
+    @ViewBuilder var footerTrailing: () -> FooterTrailing
+    @Environment(\.colorScheme) private var colorScheme
+
+    init(
+        title: String,
+        remainingPercent: Int,
+        primaryCopy: String,
+        secondaryCopy: String,
+        weatherColor: Color,
+        secondaryRingPercent: Int? = nil,
+        footerLeft: String? = nil,
+        footerRight: String? = nil,
+        warningNote: String? = nil,
+        isStale: Bool = false,
+        @ViewBuilder inlineBadge: @escaping () -> Badge,
+        @ViewBuilder footerTrailing: @escaping () -> FooterTrailing = { EmptyView() }
+    ) {
+        self.title = title
+        self.remainingPercent = remainingPercent
+        self.primaryCopy = primaryCopy
+        self.secondaryCopy = secondaryCopy
+        self.weatherColor = weatherColor
+        self.secondaryRingPercent = secondaryRingPercent
+        self.footerLeft = footerLeft
+        self.footerRight = footerRight
+        self.warningNote = warningNote
+        self.isStale = isStale
+        self.inlineBadge = inlineBadge
+        self.footerTrailing = footerTrailing
+    }
+
+    private var innerRingColor: Color {
+        guard let sec = secondaryRingPercent else {
+            return Color(red: 52 / 255, green: 211 / 255, blue: 153 / 255)
+        }
+        if sec < 20 { return .red }
+        if sec < 50 { return .orange }
+        return Color(red: 52 / 255, green: 211 / 255, blue: 153 / 255)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 5) {
+                        Text(title)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(FloatingSurfaceTheme.detail(colorScheme))
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        inlineBadge()
+                    }
+
+                    HStack(alignment: .firstTextBaseline, spacing: 2) {
+                        Text("\(remainingPercent)")
+                            .font(.system(size: 44, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
+                        Text("%")
+                            .font(.system(size: 19, weight: .medium, design: .rounded))
+                            .foregroundStyle(FloatingSurfaceTheme.detail(colorScheme))
+                    }
+                    .glanceReadableText()
+                    .opacity(isStale ? 0.58 : 1)
+                    .accessibilityLabel((isStale ? "上次观测，非当前。" : "") + "剩余 \(remainingPercent)%")
+
+                    Text(primaryCopy)
+                        .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                        .glanceReadableText()
+
+                    Text(secondaryCopy)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(FloatingSurfaceTheme.secondary(colorScheme))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                }
+
+                GlanceConcentricQuotaRing(
+                    primaryFraction: Double(remainingPercent) / 100.0,
+                    secondaryFraction: secondaryRingPercent.map { Double($0) / 100.0 },
+                    primaryColor: weatherColor,
+                    secondaryColor: innerRingColor,
+                    dimmed: isStale
+                )
+            }
+
+            Spacer(minLength: 4)
+
+            Rectangle()
+                .fill(Color.white.opacity(0.10))
+                .frame(height: 0.5)
+                .padding(.bottom, 6)
+                .accessibilityHidden(true)
+
+            HStack(spacing: 6) {
+                if let warningNote {
+                    Text(warningNote)
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                } else {
+                    Text(footerLeft ?? "官方配额实时同步")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(FloatingSurfaceTheme.detail(colorScheme))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                }
+                Spacer(minLength: 4)
+                footerTrailing()
+                if let footerRight {
+                    Text(footerRight)
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(FloatingSurfaceTheme.detail(colorScheme))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                }
+            }
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: Self.unifiedHeight)
+        .background(
+            LinearGradient(
+                colors: [weatherColor.opacity(colorScheme == .dark ? 0.13 : 0.08), Color.white.opacity(0.055)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color.white.opacity(0.16))
+                .frame(height: 0.5)
+                .padding(.horizontal, 16)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
+struct GlanceEmptyQuotaCard<Trailing: View, ActionContent: View>: View {
+    let title: String
+    let message: String
+    @ViewBuilder var trailing: () -> Trailing
+    @ViewBuilder var action: () -> ActionContent
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 6) {
+                        Text(title)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(FloatingSurfaceTheme.detail(colorScheme))
+                        Spacer(minLength: 0)
+                        trailing()
+                    }
+                    Text("—")
+                        .font(.system(size: 38, weight: .semibold, design: .rounded))
+                        .foregroundStyle(FloatingSurfaceTheme.secondary(colorScheme))
+                    Text(message)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(FloatingSurfaceTheme.secondary(colorScheme))
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.85)
+                }
+                GlanceConcentricQuotaRing(
+                    primaryFraction: 0,
+                    secondaryFraction: 0,
+                    primaryColor: FloatingSurfaceTheme.secondary(colorScheme),
+                    dimmed: true
+                )
+            }
+            Spacer(minLength: 4)
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(height: 0.5)
+                .padding(.bottom, 6)
+                .accessibilityHidden(true)
+            HStack(spacing: 6) {
+                Text("等待配额窗口同步")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(FloatingSurfaceTheme.secondary(colorScheme))
+                Spacer(minLength: 4)
+                action()
+            }
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: GlanceHeroQuotaCard<EmptyView, EmptyView>.unifiedHeight)
+        .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color.white.opacity(0.14))
+                .frame(height: 0.5)
+                .padding(.horizontal, 16)
+                .accessibilityHidden(true)
+        }
     }
 }
 

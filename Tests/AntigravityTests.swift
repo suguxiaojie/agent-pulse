@@ -250,9 +250,10 @@ enum AntigravityCoreTests {
         }, onDisconnect: { _ in })
         defer { bridge.stop() }
 
-        try installer.install(.init(hooks: true, statusLine: true))
+        try installer.install(.init(hooks: true, interactiveApprovals: true, statusLine: true))
         let installedState = installer.state()
-        expect(installedState.hooksInstalled && installedState.statusLineInstalled, "both hooks and statusLine installed")
+        expect(installedState.hooksInstalled && installedState.interactiveApprovalsInstalled && installedState.statusLineInstalled,
+               "hooks, interactive PreToolUse approvals, and statusLine installed")
         expect(FileManager.default.fileExists(atPath: installer.hooksURL.appendingPathExtension("codex-pulse-backup").path), "hooks backup created")
         expect(FileManager.default.fileExists(atPath: installer.cliSettingsURL.appendingPathExtension("codex-pulse-backup").path), "CLI settings backup created")
 
@@ -262,7 +263,14 @@ enum AntigravityCoreTests {
         let hooksAfter = try JSONSerialization.jsonObject(with: Data(contentsOf: installer.hooksURL)) as? [String: Any]
         expect(hooksAfter?["user-linter"] != nil, "user's own hook preserved")
         let pulseHook = hooksAfter?["codex-pulse"] as? [String: Any]
-        expect(pulseHook != nil && pulseHook?["PreToolUse"] == nil, "PreToolUse is NEVER registered")
+        expect(pulseHook != nil && pulseHook?["PreToolUse"] != nil, "PreToolUse registered when interactiveApprovals enabled")
+
+        // Turning off interactiveApprovals removes PreToolUse while keeping lifecycle hooks
+        try installer.install(.init(hooks: true, interactiveApprovals: false, statusLine: true))
+        let nonInteractiveHook = ((try JSONSerialization.jsonObject(with: Data(contentsOf: installer.hooksURL)) as? [String: Any])?["codex-pulse"]) as? [String: Any]
+        expect(nonInteractiveHook != nil && nonInteractiveHook?["PreToolUse"] == nil && !installer.state().interactiveApprovalsInstalled,
+               "PreToolUse removed when interactiveApprovals disabled")
+        try installer.install(.init(hooks: true, interactiveApprovals: true, statusLine: true))
 
         let parsedSQLiteTime = AntigravityScanner.parseSQLiteTimestamp("2026-11-19 19:05:31.541368+00:00")
         expect(parsedSQLiteTime != nil, "SQLite space-separated timestamp with microseconds parsed")
@@ -312,6 +320,30 @@ enum AntigravityCoreTests {
         )
         let brokenStopObj = try JSONSerialization.jsonObject(with: brokenStopOut) as? [String: Any]
         expect(brokenStopObj?["decision"] as? String == "stop", "broken route on Stop still fails safe with decision:stop")
+
+        let brokenPreOut = try runProcess(
+            executable: installer.installedHelperURL.path,
+            arguments: ["--antigravity-hook", "--configuration", "/nonexistent/route.json"],
+            stdinData: Data("{\"hookEventName\":\"PreToolUse\",\"conversationId\":\"conv-root\",\"toolCall\":{\"name\":\"run_command\",\"args\":{\"CommandLine\":\"rm -rf /\"}}}".utf8)
+        )
+        let brokenPreObj = try JSONSerialization.jsonObject(with: brokenPreOut) as? [String: Any]
+        expect(brokenPreObj?["decision"] as? String == "allow", "broken route on PreToolUse fails safe to native policy (allow, never auto_approve)")
+
+        // Routine workspace read_file passes through immediately without blocking
+        let routineReadOut = try runProcess(
+            executable: installer.installedHelperURL.path,
+            arguments: ["--antigravity-hook", "--configuration", installer.routeURL.path],
+            stdinData: try JSONSerialization.data(withJSONObject: [
+                "hookEventName": "PreToolUse",
+                "conversationId": "conv-root",
+                "cwd": "/Users/dev/My Project",
+                "workspacePaths": ["/Users/dev/My Project"],
+                "transcriptPath": "/Users/dev/.gemini/antigravity/brain/conv-root/transcript.jsonl",
+                "toolCall": ["id": "r1", "name": "read_file", "args": ["Path": "/Users/dev/My Project/README.md"]]
+            ])
+        )
+        let routineReadObj = try JSONSerialization.jsonObject(with: routineReadOut) as? [String: Any]
+        expect(routineReadObj?["decision"] as? String == "allow", "workspace read_file passes through immediately")
 
         let captured = messageBox.snapshot()
         expect(captured.contains { $0.kind == "statusLine" } && captured.contains { $0.kind == "hook" }, "bridge received both statusLine and hook payloads")

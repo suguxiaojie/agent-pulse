@@ -4,169 +4,149 @@
 
 # Agent Pulse
 
-**在菜单栏和刘海里，看清 Codex、Claude Code、Grok CLI 与 Google Antigravity 的额度、任务和本机用量。**
+**在菜单栏与刘海灵动岛里，统一看清 Codex、Claude Code、Grok CLI 与 Google Antigravity 的官方额度、实时任务、交互问答与本机用量。**
 
-[English](README.en.md) · [下载 v2.0.0](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.0.0) · [MIT License](LICENSE)
+[English](README.en.md) · [下载 v2.1.0](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.1.0) · [MIT License](LICENSE)
 
-macOS 13+ · 原生 SwiftUI / AppKit · Apple Silicon / Intel
+macOS 13+ · 原生 SwiftUI / AppKit · Apple Silicon (`arm64`) & Intel (`x86_64`)
 
 </div>
 
-Agent Pulse 是原生 macOS 菜单栏应用。官方额度来自本机 Codex App Server、Claude 状态栏、xAI 官方 `grok` 与 Google Antigravity `agy` 状态栏；任务来自桌面 IPC、专属 Hook 或经过进程核对的本地记录。Pulse 不读取账号凭据。
+Agent Pulse（原 Codex Pulse）是一款原生 macOS 菜单栏与刘海灵动岛监控工具。官方额度来自本机 Codex App Server、Claude 状态栏、xAI 官方 `grok` 查询与 Google Antigravity `agy` 状态栏；实时任务与交互请求来自桌面 IPC、隔离命名 Hook 或经进程核对的本地共享通道。**全程不读取、不存储账号凭据或邮箱，绝不静默自动批准权限。**
 
-当前版本 **v2.0.0（Build 35）** 把这四路接进同一套界面：刘海里的灵动岛、菜单栏玻璃面板，以及监控中心。
+当前版本 **v2.1.0（Build 36）** 带来四联微缩遥测磁贴、四家真实官方品牌矢量徽标、四模型统一等高灵动岛仪表盘，以及 Google Antigravity 灵动岛交互提问与工具审批。
 
-## 灵动岛
+---
 
-展开后只有一张焦点卡片。当前任务最多显示 3 个步骤和本轮 Token，其他会话排成胶囊，点一下就能切换。下面是设置页里的同一套生产预览，角上标着「示例数据」。
+## 灵动岛（Dynamic Island）
+
+展开态只保留一张焦点任务卡片：实时展示当前状态、本轮耗时、最近 3 个工具步骤与本轮 Token；其余并发会话收纳为底部胶囊，点击即可切换。四家编程代理各自拥有专属像素桌宠（Codex 终端光标、Claude Clawd、Grok Bot 与 Antigravity 浮游星核）。
 
 <p align="center">
-  <img src="docs/images/pulse-island-focus.png" alt="灵动岛样式：设置页中标有示例数据的生产预览，含展开卡片、步骤和悬浮胶囊" width="88%">
+  <img src="docs/images/pulse-island-focus.png" alt="灵动岛焦点任务舞台：展开卡片、三步实时时间轴、本轮 Token 与底部紧凑胶囊预览" width="88%">
 </p>
 
-点左上角的额度，岛内打开用量统计。Codex、Claude Code、Grok CLI 在同一页切换。下面是本机的 Grok CLI：每周剩余 91%，SuperGrok Plus，共享额度池和预付余额分开显示，本机 Token 与 CLI 报告成本标着部分记录。
+遇到需要确认的工具调用或 `ask_question` 提问时，灵动岛自动接管焦点；点击左上角额度胶囊则在同一套 `572pt` 统一高度 Bento 舞台内查看四端用量统计。
 
 <p align="center">
-  <img src="docs/images/pulse-island-usage.png" alt="灵动岛用量统计：Grok CLI 每周剩余 91%，SuperGrok Plus、共享额度池、预付余额和本机 Token" width="42%">
+  <img src="docs/images/pulse-island-approval.png" alt="灵动岛交互问答：Google Antigravity 提问单选／多选／自由输入回答与倒计时回退" width="51%">
+  <img src="docs/images/pulse-island-usage.png" alt="灵动岛用量统计：四家真实品牌图标切换、双同心额度环、三宫格 Token 与零滚动条热力图" width="47%">
 </p>
 
-- 岛体与刘海同色，顶部内凹，边缘有一圈跟随任务状态的细光。Codex 任务显示终端图标，Claude Code 显示 Clawd，Grok CLI 显示 Grok Bot，Google Antigravity 显示浮游星核。
-- 新的待批准或待回复会自动占住焦点。你可以在岛里选择、勾选或输入文字；Grok 的工具请求可以「允许一次」或「拒绝一次」，保留原生选项，不生成长期授权。其他请求交回原客户端。不会自动批准。
-- OneNative 受管 Codex 新启动的终端独立 App Server，以及已经在跑的共享 daemon，均可提供原生异步提问；无需指定文件夹。回答限定在当前活动轮次，已结束轮次交回原客户端。已有 `--no-daemon` 独立进程保持原模式，不会被热迁移。详见 [OneNative 接入边界](docs/one-native-questions.md)。
-- 「Fast」只在当前会话明确开启时出现。缺少记录时不显示，也不用全局配置猜测。
-- 任务完成可以播放提示音，并按轻、标准、热烈三档放礼花。减弱动态效果后，进度特效和礼花改为静止。
-- 关注信号、额度恢复，以及重置卡到期前 24、12、6 小时，会同时走系统通知和岛内提醒。应用没开时不补历史，重新打开只补当前最紧迫的一条。
+- **岛内直接回答与显式单次审批**：支持 Codex（桌面 IPC 与 OneNative 活动轮次约束）、Claude Code、Grok CLI 与 Google Antigravity 的真实提问回答及工具「批准一次／拒绝」；保留原生选项 ID，不生成长期授权，断线或超时一律 Fail-Safe 交回原客户端处理，不会自动批准。
+- **四端统一等高用量面板**：顶部四家真实品牌徽标一键切换，同心双环表盘同时呈现主副窗口（如 5 小时与每周额度），底部集成 30 日成本柱图与单屏自适应 Token 热力图，跨模型切换零高度跳动。
+- **完成反馈与到期提醒**：任务完成后在 60 秒留存期内锁定真实轮次耗时并支持可选提示音与三档礼花；关注信号、额度恢复及 Codex 重置卡到期前 24／12／6 小时同步推送系统通知与岛内提醒卡片。
 
-## 菜单栏玻璃面板
+---
 
-点菜单栏图标打开。页眉在 Codex、Claude、Grok 之间切换。大数字是当前瓶颈窗口的剩余额度，预报按本周期消耗速度估算，并标明重置时间。
+## 菜单栏气象玻璃面板（Weather Glass Panel）
+
+点击菜单栏图标展开 `296pt` 气象玻璃面板。顶栏采用 **四联微缩遥测磁贴** —— 无需来回切页即可同屏直看 **Codex、Claude、Grok、Antigravity** 四家实时剩余百分比与微进度条，点击任一磁贴平滑切换下方详情。
 
 <p align="center">
-  <img src="docs/images/pulse-glance-codex.png" alt="Codex 玻璃面板：每周剩余 41%，7 天本机用量，Credits 与额度重置" width="32%">
-  <img src="docs/images/pulse-glance-claude.png" alt="Claude 玻璃面板：每周剩余 40%，5 小时额度 52%，近 7 天本机用量" width="32%">
-  <img src="docs/images/pulse-glance-grok.png" alt="Grok 玻璃面板：SuperGrok Plus 每周剩余 92%，共享额度池、预付余额和本机 Token" width="32%">
+  <img src="docs/images/pulse-glance-codex.png" alt="Codex 气象玻璃面板：四联遥测磁贴、每周额度、重置卡入口与 7 日成本" width="24%">
+  <img src="docs/images/pulse-glance-claude.png" alt="Claude 气象玻璃面板：四联遥测磁贴、5 小时与每周双环额度及本地 Token" width="24%">
+  <img src="docs/images/pulse-glance-grok.png" alt="Grok 气象玻璃面板：SuperGrok Plus 共享额度池、预付余额与本地统计" width="24%">
+  <img src="docs/images/pulse-glance-antigravity.png" alt="Antigravity 气象玻璃面板：Google AI Ultra 双池同心环、合作模型池与近 7 日成本" width="24%">
 </p>
 
-- Codex 显示套餐窗口、速度预报、近 7 天本机成本或 Token，以及额度重置入口。个人付费套餐显示为 Go、Plus、Pro100、Pro200、Pro500。
-- Claude 显示 5 小时和每周额度。官方额度要等 Claude Code 下一次回复后，由状态栏带回来。
-- Grok 显示服务端返回的真实剩余比例、周期结束时间、统一共享额度池和单独的预付余额。本机历史按 prompt 去重，缺失成本保持未知。
-- 柱子下方只标星期。有未计价模型的日子会标成金额未知。系统打开降低透明度或增强对比度时，面板改为不透明。
+- **氛围色与同心双环**：背景光晕与磁贴高亮随当前瓶颈窗口余量在青翠、琥珀、绯红之间自然过渡；右侧双环同步展示主窗口与副窗口剩余比例。
+- **分端精准语义**：
+  - **Codex**：支持 Go / Plus / Pro100 / Pro200 / Pro500 套餐识别、消耗速度预测、Credits 余额与内联额度重置卡入口；
+  - **Claude Code**：同步 5 小时与每周窗口比例，跨周期重置后自动提示待新回复刷新；
+  - **Grok CLI**：区分官方统一共享额度池与独立预付余额；
+  - **Google Antigravity**：拆分 Gemini 5h／每周池、合作模型池与 AI Credits 余额。
+- **近 7 天成本 / Token 双视图**：柱状图支持一键切换估算成本与 Token，含未公开单价模型的日期自动标注金额未知下界。
 
-## 监控中心
+---
 
-监控中心把用量、成本、社区动态、会话和两个编程代理的连接放在同一套桌面卡片里。
+## 监控中心（Monitor Center）
+
+监控中心将跨周期用量分析、API 等价成本、社区重置雷达、本地会话连续性管理，以及四路编程代理的接入控制收进同一套暗色玻璃桌面窗口。
 
 <p align="center">
-  <img src="docs/images/pulse-usage.png" alt="用量分析：近 7 日 Token、输入输出与缓存、趋势和项目用量" width="49%">
-  <img src="docs/images/pulse-cost.png" alt="成本估算：今日 API 等价成本、按小时趋势和日志来源" width="49%">
+  <img src="docs/images/pulse-usage.png" alt="用量分析：近 7 日 Token、非缓存输入／输出／缓存拆分、趋势与项目排行" width="49%">
+  <img src="docs/images/pulse-cost.png" alt="成本估算：API 等价成本、按日／按小时分布与模型计价明细" width="49%">
 </p>
 <p align="center">
-  <img src="docs/images/pulse-dynamic-center.png" alt="动态中心：当前账号额度、社区重置预测和公开动态" width="49%">
-  <img src="docs/images/pulse-sessions.png" alt="会话管理：项目、会话数量、更新时间和账号归属" width="49%">
+  <img src="docs/images/pulse-dynamic-center.png" alt="动态中心：当前账号官方额度、社区重置预测雷达与公开时间轴" width="49%">
+  <img src="docs/images/pulse-sessions.png" alt="会话管理：项目分组、会话归属证据、重命名、导入导出与安全清理" width="49%">
 </p>
 <p align="center">
-  <img src="docs/images/pulse-claude-code.png" alt="Claude Code：连接开关、官方额度占位和本机 Token 与成本" width="49%">
-  <img src="docs/images/pulse-grok.png" alt="Grok CLI：连接开关、已同步的真实剩余额度、共享池、预付余额和本机用量" width="49%">
+  <img src="docs/images/pulse-claude-code.png" alt="Claude Code 接入：专属 Hook／状态栏开关、官方额度与本机用量" width="49%">
+  <img src="docs/images/pulse-grok.png" alt="Grok CLI 接入：共享启动开关、真实剩余额度、预付余额与本机成本" width="49%">
+</p>
+<p align="center">
+  <img src="docs/images/pulse-antigravity.png" alt="Google Antigravity 接入：2.0 桌面端／IDE／CLI 三端任务、灵动岛审批问答开关与多池官方额度" width="99%">
 </p>
 
-- **用量与成本**按周期看 Token、缓存、项目排行和趋势。Codex、Claude 的成本按公开模型价格估算，是 API 等价金额，不是订阅账单。官方 Standard 费率能读新旧价格表，更新失败时保留最后一次有效价格。
-- **动态中心**并排显示官方额度、社区预测、重置时间轴和本机恢复记录，每条都标来源。社区预测不能保证你的账号会重置。
-- **会话管理**可以搜索、导出 Markdown 或 HTML、做原始备份、导入和迁移。列表只缓存元数据和短标题，导出正文时才读原始日志。
-- 已登记的 Codex 项目可以用正在运行的桌面项目服务重命名。Pulse 回读确认后再更新列表，不改文件夹、路径或会话绑定。侧栏如果还开着，可能要重新打开 Codex 客户端才会刷新。
-- 没有 Codex 项目登记的历史分组，可以按完整路径在 Pulse 里单独起显示名。这个名字只存在本应用偏好里，刷新和重启后还在。原生项目名优先。
-- 删除项目时可以只删会话，也可以把该项目独立文件夹整份移入废纸篓。移文件夹前会核对唯一登记和原始工作目录，并要求输入文件夹名。共享目录、嵌套项目、符号链接或路径对不上时，只保留删会话。
-- **Claude Code** 默认关闭。打开前先备份 `settings.json`，只改 Pulse 自己的条目；关掉时恢复原来的状态栏，其他工具的配置留着。灵动岛显示本轮公开进展和真实工具步骤，Bash 显示命令描述。监控重启后，只恢复本地登记里仍然忙碌的会话。
-- **Grok CLI** 默认关闭。打开后每分钟用一次短生命周期的官方 CLI 查询剩余额度，也可以手动刷新。临时的上游或网络故障会在总时限内短重试；持续失败时保留带标记的上次观测，周期真正结束后不再显示旧比例。不把上下文长度当成订阅额度。实时任务必须对得上进程身份，空闲终端和旧的完成记录不会再响一次。
-- **Google Antigravity** 默认关闭。启用后统一扫描本机 Antigravity 2.0 桌面端、IDE 与 `agy` CLI 三端会话用量，按公开标准费率折算已知模型并在含内部代号模型时以 `≥` 标出下界。可选挂载 `~/.gemini/config/hooks.json` 专属生命周期项（不注册 `PreToolUse`、不自动批准）与 `agy` 状态栏配额／AI Credits 采集（保留并转发原有状态栏，停用完整恢复）。详见 [Antigravity 接入](docs/antigravity-integration.md)。
+- **用量分析与成本估算**：按周／月／季统计 Token、缓存命中率与项目排行；Codex、Claude 与 Antigravity 按公开官方标准单价折算 API 等价成本（非订阅账单），未公开单价模型以 `≥` 下界诚实呈现。
+- **动态中心**：并排对比当前账号官方额度、社区重置预测与本机恢复历史，所有外部信号均标明来源。
+- **会话管理**：支持全文搜索、Markdown／HTML 导出、原始备份、跨目录迁移、桌面项目服务在线重命名，以及多重校验下的独立项目文件夹废纸篓清理。
+- **安全可逆的三方代理接入**（均默认关闭，启用前自动完整备份原配置）：
+  - **Claude Code**：仅管理 `settings.json` 中本应用专属标记项，停用完整恢复原状态栏。详见 [Claude Code 接入说明](docs/claude-code-integration.md)。
+  - **Grok CLI**：仅管理 `$GROK_HOME/config.toml` 的 `cli.use_leader` 官方共享模式，自动连接同用户活跃 `leader` 通道，不接管或重启已有独立终端。详见 [Grok CLI 接入](docs/grok-cli-integration.md) 与 [岛内问答边界](docs/grok-island-questions.md)。
+  - **Google Antigravity**：只读聚合 2.0 桌面端、IDE 与 `agy` CLI 三端本地转录及 SQLite 摘要（自动过滤子代理，结合 `presence/*.lock` 文件锁判定存活）；可选挂载 `~/.gemini/config/hooks.json` 的 `"codex-pulse"` 命名键与 `agy` 状态栏转发，本地策略自动放行常规操作，仅在需确认工具或 `ask_question` 时唤醒灵动岛。详见 [Antigravity 接入说明](docs/antigravity-integration.md)。
 
-自动接入只在你打开 Grok 时管理官方共享启动开关 `cli.use_leader`，并先备份原来的值。之后照常运行 `grok`，Pulse 识别会话和项目，不替你选目录，也不另开终端。已经在跑的独立任务不会被重启或迁走。断线不取消原请求，结果不清楚时不重发。关闭 Pulse 的监控不会改回这个开关，原来的备份可以自己恢复。说明见 [Grok CLI 接入](docs/grok-cli-integration.md) 和 [岛内问答边界](docs/grok-island-questions.md)。
+---
 
-首次启用后，原有 Grok CLI 需要在任务结束后完整退出并重新运行一次；`/new` 只新建会话，不会重载共享启动设置。在原项目目录运行 `grok -c` 可以接续最近会话。未建立共享连接时，选择和批准仍在原 Grok 窗口处理。
+## 个性化设置与权限
 
-## 设置
-
-灵动岛、玻璃面板和权限都在监控中心里改，改完立即生效。数字默认用万和亿，例如 `8,432`、`541万`、`1.84亿`，也可以改成 K／M／B。金额、百分比和会话数不受影响。
-
-设置页上方的岛是同一套生产组件画出的示例，角上标着「示例数据」。旁边的玻璃面板用的是当前账号的真实额度，并标着「只读预览」。
+灵动岛外观、玻璃面板模块开关、数字单位（`万／亿` 或 `K／M／B`）与通知策略均在监控中心即时预览并实时生效。
 
 <p align="center">
-  <img src="docs/images/pulse-island-settings.png" alt="灵动岛设置：标有示例数据的生产预览、边缘光、展开宽度和 Clawd" width="49%">
-  <img src="docs/images/pulse-panel-settings.png" alt="菜单栏与面板：当前账号的只读预览、额度窗口和数字单位" width="49%">
+  <img src="docs/images/pulse-island-settings.png" alt="灵动岛设置：实时生产预览、材质透光度、边缘光效与桌宠尺寸" width="49%">
+  <img src="docs/images/pulse-panel-settings.png" alt="菜单栏与面板设置：四联磁贴实时只读预览、显示项开关与数字单位" width="49%">
 </p>
 
 <details>
-<summary>安装与权限</summary>
+<summary>查看「安装与权限」页面（v2.1.0 · Build 36）</summary>
 <p align="center">
-  <img src="docs/images/pulse-setup.png" alt="安装与权限：v1.12.0 Build 34、通知权限和任务监控连接" width="82%">
+  <img src="docs/images/pulse-setup.png" alt="安装与权限：v2.1.0 Build 36、共享 Codex 任务连接与到期提醒开关" width="84%">
 </p>
 </details>
 
+---
+
 ## 下载与安装
 
-在 [GitHub Releases](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.0.0) 下载和这台 Mac 对应的安装包：
+前往 [GitHub Releases (`v2.1.0`)](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.1.0) 下载对应架构安装包：
 
-| Mac 处理器 | 安装包 |
+| Mac 处理器 | 安装包下载 |
 |---|---|
-| Apple Silicon（M 系列） | [arm64 DMG](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.0.0/CodexNotchMonitor-v2.0.0-arm64.dmg) |
-| Intel | [x86_64 DMG](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.0.0/CodexNotchMonitor-v2.0.0-x86_64.dmg) |
+| **Apple Silicon（M1 / M2 / M3 / M4）** | [CodexNotchMonitor-v2.1.0-arm64.dmg](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.1.0/CodexNotchMonitor-v2.1.0-arm64.dmg) |
+| **Intel (`x86_64`)** | [CodexNotchMonitor-v2.1.0-x86_64.dmg](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.1.0/CodexNotchMonitor-v2.1.0-x86_64.dmg) |
 
-1. 打开 DMG，把 App 拖进「应用程序」。
-2. 启动 App。Codex 额度需要本机已登录的 Codex／ChatGPT Desktop。
-3. 需要提醒时再打开通知。任务监控的连接状态在「安装与权限」。
+1. 打开对应架构的 `.dmg`，将 **Agent Pulse**（`CodexNotchMonitor.app`）拖入「应用程序（`/Applications`）」。
+2. 启动应用。Codex 官方额度需本机已登录 Codex／ChatGPT 桌面端；Claude Code、Grok CLI 与 Google Antigravity 可在监控中心按需开启。
+3. 安装包采用临时签名（Ad-hoc Signed），尚未经过 Apple 公证；首次打开若遇系统拦截，请在核对 Release `SHA256SUMS-v2.1.0.txt` 后于「系统设置 → 隐私与安全性」中点击允许。
+4. 为保持老用户无缝升级，Bundle ID（`com.coverai.codex-notch-monitor`）、可执行文件名与本地数据目录均保持兼容，覆盖安装后原有配置与历史记录完整保留。
 
-安装包是临时签名，还没有 Apple 公证。如果系统拦住第一次打开，先确认下载来源，再在「系统设置 → 隐私与安全性」里允许。
+---
 
-应用由 Codex Pulse（原 Codex Monitor）升级更名为 **Agent Pulse**。Bundle ID、`CodexNotchMonitor.app` 文件名、偏好和数据目录都沿用原来的值，升级后配置和数据还在。应用里的「检查更新」只打开下载页，安装由你自己完成。
+## 数据来源与隐私边界
 
-## 数据从哪来
-
-| 内容 | 来源 |
+| 维度 | 数据来源与安全承诺 |
 |---|---|
-| Codex 官方额度与账号 | 本机 Codex App Server。显示的是额度比例和重置时间，不是剩余消息条数 |
-| Claude／Grok／Antigravity 额度 | Claude 状态栏、官方 `grok` `_x.ai/billing` 与 Antigravity `agy` 状态栏（Gemini／合作池比例窗口及 AI Credits 分开展示） |
-| 额度预报 | 用当前窗口已用比例和已经过去的时间估算。周期开始不到 1 小时时不预报 |
-| Token 与项目统计 | 本机还能读到的结构化会话日志，包含缓存 |
-| 实时任务 | Codex 用桌面 IPC 和本地日志；Claude Code 用专属 Hook 和本地登记；Grok CLI 用经过进程核对的本地共享通道；Antigravity 覆盖 2.0 桌面端、IDE 与 CLI 三端转录、文件锁与生命周期 Hook |
-| 成本 | Codex、Claude、Antigravity 按 Token × 官方公开单价估算；Grok 用 CLI 报告的轮次成本。都不是订阅账单，未知金额会标出来 |
-| 社区动态与预测 | 第三方聚合 [codex-reset.com](https://codex-reset.com/zh/tibo) |
-| 会话账号归属 | 只记录可靠看到的归属。基线之前或证据不够的会话保持「未归属」 |
+| **官方额度与套餐** | 本机 Codex App Server、Claude 状态栏、官方 `grok` `_x.ai/billing`、Antigravity `agy` 状态栏（显式剥离 `email` 与未知字段） |
+| **凭据零接触** | **不读取、不保存、不上传** `auth.json`、`.pbtxt`、OAuth Token、Cookie、API Key 或钥匙串机密 |
+| **实时任务与问答** | Codex 桌面 IPC／OneNative 活动轮次代理；Claude 与 Antigravity 隔离命名 Hook（2 分钟上限，失联自动放行回原客户端）；Grok 同用户 `leader` Socket |
+| **Token 与等价成本** | 只读解析本机结构化会话日志（不读模型内部 `thinking` 原文）；成本按官方公开 API 费率估算，不代表订阅扣费账单 |
 
-- 不读 `auth.json`、Cookie、API Key、Claude／Antigravity 凭据、邮箱或钥匙串。本地会话、项目和用量不会上传到社区源或价格目录。
-- Codex 任务监控不安装 Hook，也不写 Codex 客户端配置。
-- 导入、恢复、删除、迁移和手动重置额度都要你先点，执行前能看到影响范围。重置额度要再确认一次。
-- 可读导出默认遮住敏感正文。原始备份和迁移包里可能有源码、提示词和附件，请自己保管。
+---
 
-## 从源码构建
-
-需要 Swift 6 工具链和 macOS 构建工具，没有第三方 Swift Package。
+## 本地构建与验证
 
 ```bash
-git clone https://github.com/suguxiaojie/agent-pulse.git
-cd agent-pulse
-./scripts/build-app.sh native        # 构建当前架构
-open build/CodexNotchMonitor.app
+# 运行全量单元与端到端回归测试（含 Codex / Claude / Grok / Antigravity）
+zsh scripts/test.sh
+
+# 构建当前架构 Release 应用包或指定架构 DMG
+zsh scripts/build-app.sh arm64
+zsh scripts/build-dmg.sh arm64
+zsh scripts/build-dmg.sh x86_64
 ```
 
-```bash
-./scripts/test.sh                    # 完整测试，包含 Claude、Grok 与 Antigravity 接入
-SKIP_COST_SMOKE_TESTS=1 ./scripts/test.sh
-./scripts/build-dmg.sh arm64         # Apple Silicon 安装包
-./scripts/build-dmg.sh x86_64        # Intel 安装包
-```
+## 开源许可
 
-更多说明：
-
-- [灵动岛审批](docs/island-approvals.md)
-- [Claude Code 接入](docs/claude-code-integration.md)
-- [Grok CLI 接入](docs/grok-cli-integration.md)
-- [Google Antigravity 接入](docs/antigravity-integration.md)
-- [压缩历史会话](docs/compressed-rollouts.md)
-- [项目进度](ROADMAP.md)
-
-## 致谢与许可
-
-感谢 [Codex Island](https://github.com/ericjypark/codex-island)、[QuotaView](https://github.com/Duoasa/QuotaView) 和 [Open Claude UI](https://github.com/Caho1/open-claude-ui)。第三方来源和完整许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-本项目采用 [MIT License](LICENSE)，Copyright (c) 2026 CoverAI。Agent Pulse 是独立项目，与 OpenAI、Anthropic、xAI、Google 没有官方关联。
-
-支持项目：[CoverAI 自家代充服务](https://www.coverai.store/)。
+本项目基于 [MIT License](LICENSE) 开源；第三方组件与设计致谢详见 [Resources/ThirdPartyNotices.txt](Resources/ThirdPartyNotices.txt)。

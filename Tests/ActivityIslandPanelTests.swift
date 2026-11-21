@@ -320,11 +320,21 @@ enum ActivityIslandPanelTests {
         expect(measuredHeight > 0 && measuredHeight <= usageCanvas.maximumUsageHeight, "Codex content selector and usage fit screen limit")
         expect(measuredHeight <= usageCanvas.maximumUsageHeight, "measured Codex page fits screen limit")
         print("Usage layout measured Codex: \(measuredHeight) pt")
+        let codexWideHeight = measuredHeight
         usageModel.updateClaudeEnabled(true); usageModel.claudeUsage = claudeSummary; usageModel.claudeLimits = claudeLimits
         usageModel.selectUsageProvider(.claude)
         usageHost.layoutSubtreeIfNeeded(); settle(0.3)
         expect(measuredHeight > 0 && measuredHeight <= usageCanvas.maximumUsageHeight, "Claude content selector and usage fit screen limit")
+        expect(abs(measuredHeight - codexWideHeight) <= 1.0, "Scheme B unified height keeps Codex and Claude identical (\(codexWideHeight) vs \(measuredHeight))")
         print("Usage layout measured Claude: \(measuredHeight) pt")
+        usageModel.grokEnabled = true
+        usageModel.selectUsageProvider(.grok)
+        usageHost.layoutSubtreeIfNeeded(); settle(0.3)
+        expect(abs(measuredHeight - codexWideHeight) <= 1.0, "Scheme B unified height keeps Grok identical (\(codexWideHeight) vs \(measuredHeight))")
+        usageModel.antigravityEnabled = true
+        usageModel.selectUsageProvider(.antigravity)
+        usageHost.layoutSubtreeIfNeeded(); settle(0.3)
+        expect(abs(measuredHeight - codexWideHeight) <= 1.0, "Scheme B unified height keeps Antigravity identical (\(codexWideHeight) vs \(measuredHeight))")
         let narrowUsage = ActivityIslandPanelMetrics(rowCount: 1, availableSize: screenSize, expandedWidth: 560,
             safeAreaTop: 32, hardwareGap: 200, usagePage: true, reservesUsagePage: true)
         usageModel.metrics = narrowUsage

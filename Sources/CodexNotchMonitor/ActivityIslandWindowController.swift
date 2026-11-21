@@ -104,6 +104,11 @@ final class ActivityIslandWindowController: NSObject {
             self.model.discardAnswerDrafts(except: self.store.islandAnswerRequestIDs)
             self.model.objectWillChange.send(); self.rescheduleTransitions()
         }.store(in: &cancellables)
+        store.antigravity.$requests.receive(on: RunLoop.main).sink { [weak self] _ in
+            guard let self else { return }
+            self.model.discardAnswerDrafts(except: self.store.islandAnswerRequestIDs)
+            self.model.objectWillChange.send(); self.rescheduleTransitions()
+        }.store(in: &cancellables)
         model.onSelect = { [weak self] id in
             guard let self, let row = self.model.sessions.first(where: { $0.id == id }) else { return }
             self.focusHandoffTimer.update(deadline: nil, onExpire: {})

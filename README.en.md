@@ -4,169 +4,148 @@
 
 # Agent Pulse
 
-**Quotas, tasks, and local usage for Codex, Claude Code, Grok CLI, and Google Antigravity, from the menu bar and the notch.**
+**Quotas, live tasks, interactive approvals, and local usage for Codex, Claude Code, Grok CLI, and Google Antigravity — unified in your menu bar and MacBook notch.**
 
-[简体中文](README.md) · [Download v2.0.0](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.0.0) · [MIT License](LICENSE)
+[简体中文](README.md) · [Download v2.1.0](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.1.0) · [MIT License](LICENSE)
 
-macOS 13+ · Native SwiftUI / AppKit · Apple Silicon / Intel
+macOS 13+ · Native SwiftUI / AppKit · Apple Silicon (`arm64`) & Intel (`x86_64`)
 
 </div>
 
-Agent Pulse is a native macOS menu bar app. Official quotas come from the local Codex App Server, the Claude status line, the official xAI `grok` CLI, and Google Antigravity's `agy` status line. Tasks come from desktop IPC, a dedicated Hook, or local records checked against a live process. Pulse does not read account credentials.
+Agent Pulse (formerly Codex Pulse) is a native macOS menu bar and Dynamic Island monitor for AI coding agents. Official quotas come from your local Codex App Server, Claude Code status line, official xAI `grok` billing queries, and Google Antigravity's `agy` status line. Live tasks and interactive prompts flow through desktop IPC, isolated named Hooks, or process-verified local leader sockets. **Agent Pulse never reads, stores, or transmits account credentials or emails, and never silently auto-approves tool execution.**
 
-**v2.0.0 (Build 35)** brings all four into the same interface: a Dynamic Island in the notch, a glass menu bar panel, and Monitor Center.
+**v2.1.0 (Build 36)** introduces four-provider telemetry tiles with authentic official brand vector icons, a uniform-height four-agent Dynamic Island usage dashboard, and interactive Dynamic Island Q&A and tool approvals for Google Antigravity.
+
+---
 
 ## Dynamic Island
 
-The expanded island keeps a single focus card. The current task shows up to three steps and this turn's Token count. Other sessions sit in a row of capsules; click one to switch. The figure below is that same production preview from Settings, labeled 示例数据.
+The expanded island keeps a single focus card showing task phase, locked turn duration, up to three recent tool steps, and turn Token usage; concurrent sessions line up as compact capsules below. Each agent features its own pixel mascot (Codex terminal badge, Claude Clawd, Grok Bot, and Antigravity's levitating star-core).
 
 <p align="center">
-  <img src="docs/images/pulse-island-focus.png" alt="Dynamic Island style: the Settings preview labeled as sample data, with the expanded card, steps, and floating capsule" width="88%">
+  <img src="docs/images/pulse-island-focus.png" alt="Dynamic Island focus stage: expanded task card, 3-step timeline, turn tokens, and compact notch strip" width="88%">
 </p>
 
-The quota at the upper left opens usage on the island. Codex, Claude Code, and Grok CLI share that page. This capture is Grok CLI on this Mac: 91% of the weekly window left, SuperGrok Plus, the shared pool and prepaid balance on separate lines, and local tokens with the CLI-reported cost marked as a partial record.
+Incoming approvals and `ask_question` prompts take focus automatically, while clicking the top-left quota capsule opens the uniform `572pt` four-provider Bento usage dashboard right inside the island.
 
 <p align="center">
-  <img src="docs/images/pulse-island-usage.png" alt="Dynamic Island usage: Grok CLI at 91% weekly remaining, SuperGrok Plus, shared pool, prepaid balance, and local tokens" width="42%">
+  <img src="docs/images/pulse-island-approval.png" alt="Dynamic Island interactive Q&A: Google Antigravity single/multi-select question card with countdown and client fallback" width="51%">
+  <img src="docs/images/pulse-island-usage.png" alt="Dynamic Island usage dashboard: authentic 4-brand switcher, dual concentric quota rings, Bento token cards, and scrollbar-free heatmap" width="47%">
 </p>
 
-- The shell matches the notch, with concave top corners and a thin edge light that follows task state. Codex tasks use a terminal mark, Claude Code uses Clawd, Grok CLI uses the Grok Bot, and Google Antigravity uses the levitating star-core mascot.
-- A new approval or question takes focus. You can pick an option, select several, or type an answer. A Grok tool request can be allowed once or rejected once, using the original option IDs, with no lasting grant. Anything else returns to the original client. Nothing is approved automatically.
-- Native asynchronous questions are read from terminal-scoped App Servers created by new managed OneNative Codex launches, or from an existing shared daemon, without selecting a folder. Answers are restricted to the current active turn; finished turns go back to the original client. Existing standalone `--no-daemon` processes keep their original mode and are not migrated. See [OneNative boundaries](docs/one-native-questions.md).
-- "Fast" appears only when that session explicitly enabled it. Missing evidence stays blank; a global default is not treated as session evidence.
-- Completed tasks can play a sound and one of three confetti levels: light, standard, or full. Reduce Motion holds progress effects and confetti still.
-- Followed signals, quota recovery, and reset-card reminders at 24, 12, and 6 hours before expiry use both a system notification and an island card. While the app is quit, missed reminders are not replayed; reopening delivers only the most urgent one.
+- **Inline Q&A & Explicit One-Shot Approvals**: Answer `ask_question` prompts and approve or reject sensitive tool calls once across Codex (desktop IPC & turn-scoped OneNative App Servers), Claude Code, Grok CLI, and Google Antigravity. Original option IDs are preserved with no persistent grants; disconnects or timeouts always fail-safe back to the native client without auto-approval.
+- **Zero-Jitter Four-Provider Usage Stage**: Switch across Codex, Claude, Grok, and Antigravity with authentic vector marks, dual concentric quota rings, a 30-day cost bar chart, and a single-screen Token activity heatmap locked to an identical height across all providers.
+- **Completion Receipts & Expiry Alerts**: Completed turns lock their exact runtime and expire cleanly after 60 seconds, with optional completion audio and three confetti presets. Followed signals, quota recovery, and Codex reset-credit reminders (24h / 12h / 6h before expiry) notify both macOS Notification Center and the island.
 
-## Glass menu bar panel
+---
 
-Click the menu bar icon. The header switches among Codex, Claude, and Grok. The large figure is the remaining quota in the window that runs out first. The forecast estimates pace from this cycle and shows when the window resets.
+## Weather Glass Menu Bar Panel
+
+Click the menu bar icon to open the `296pt` Weather Glass Panel. The header features **Four-Provider Telemetry Tiles** — letting you scan live remaining percentages and micro progress bars for **Codex, Claude, Grok, and Antigravity** at a glance before clicking any tile to inspect details.
 
 <p align="center">
-  <img src="docs/images/pulse-glance-codex.png" alt="Codex glass panel: 41% weekly quota remaining, seven-day local usage, credits, and reset credits" width="32%">
-  <img src="docs/images/pulse-glance-claude.png" alt="Claude glass panel: 40% weekly remaining, 52% in the 5-hour window, and seven-day local usage" width="32%">
-  <img src="docs/images/pulse-glance-grok.png" alt="Grok glass panel: SuperGrok Plus at 92% weekly remaining, shared pool, prepaid balance, and local tokens" width="32%">
+  <img src="docs/images/pulse-glance-codex.png" alt="Codex Weather Glass Panel: 4-tile telemetry header, weekly quota, inline reset entry, and 7-day cost" width="24%">
+  <img src="docs/images/pulse-glance-claude.png" alt="Claude Weather Glass Panel: 4-tile telemetry header, dual quota rings, and local tokens" width="24%">
+  <img src="docs/images/pulse-glance-grok.png" alt="Grok Weather Glass Panel: SuperGrok Plus shared quota pool, prepaid balance, and local usage" width="24%">
+  <img src="docs/images/pulse-glance-antigravity.png" alt="Antigravity Weather Glass Panel: Google AI Ultra dual concentric rings, partner pool, and 7-day cost" width="24%">
 </p>
 
-- Codex shows the plan window, a pace forecast, the last seven days of local cost or tokens, and the quota-reset entry. Paid personal plans appear as Go, Plus, Pro100, Pro200, or Pro500.
-- Claude shows the 5-hour and weekly quotas. Official numbers arrive with the next Claude Code reply, through its status line.
-- Grok shows the remaining percentage returned by the service, the period end, the shared quota pool, and the prepaid balance on its own line. Local history is deduplicated by prompt. Missing costs stay unknown.
-- Weekdays sit under the bars. A day with an unpriced model is marked amount unknown. Reduce Transparency or Increase Contrast turns the panel opaque.
+- **Weather-Tinted Concentric Rings**: Ambient glow and tile highlights shift smoothly across calm cyan, tight amber, and critical crimson based on pace forecasts, paired with outer and inner concentric rings for primary and secondary windows.
+- **Provider-Native Semantics**:
+  - **Codex**: Personal plan tiers (Go / Plus / Pro100 / Pro200 / Pro500), burn-rate forecasts, Credits, and inline quota-reset entry;
+  - **Claude Code**: 5-hour and weekly windows with automatic rollover detection;
+  - **Grok CLI**: Shared subscription pool kept distinct from prepaid balance;
+  - **Google Antigravity**: Gemini 5h/weekly pools and partner model pools separated from AI Credits.
+- **7-Day Cost & Token Strip**: Toggle between estimated API-equivalent cost and Token volume, flagging days that include unpriced models.
+
+---
 
 ## Monitor Center
 
-Usage, cost, community updates, sessions, and both coding-agent connections share one set of desktop cards.
+Monitor Center brings multi-window usage analytics, API-equivalent cost breakdowns, community reset radar, session continuity, and four coding-agent integrations into one dark-glass desktop window.
 
 <p align="center">
-  <img src="docs/images/pulse-usage.png" alt="Usage analysis: seven-day tokens, input, output, cache, trend, and project usage" width="49%">
-  <img src="docs/images/pulse-cost.png" alt="Cost estimates: today's API-equivalent cost, hourly trend, and log source" width="49%">
+  <img src="docs/images/pulse-usage.png" alt="Usage analytics: 7-day tokens, uncached input/output/cache breakdown, trend curve, and project ranking" width="49%">
+  <img src="docs/images/pulse-cost.png" alt="Cost estimates: API-equivalent cost, daily/hourly bars, and model pricing breakdown" width="49%">
 </p>
 <p align="center">
-  <img src="docs/images/pulse-dynamic-center.png" alt="Activity Center: current account quota, community reset forecast, and public posts" width="49%">
-  <img src="docs/images/pulse-sessions.png" alt="Session management: projects, session counts, update times, and account ownership" width="49%">
+  <img src="docs/images/pulse-dynamic-center.png" alt="Activity Center: official account quota, community reset radar, and public signal timeline" width="49%">
+  <img src="docs/images/pulse-sessions.png" alt="Session management: project groups, account attribution evidence, rename, import/export, and safe cleanup" width="49%">
 </p>
 <p align="center">
-  <img src="docs/images/pulse-claude-code.png" alt="Claude Code: connection switches, official quota placeholder, and local tokens and cost" width="49%">
-  <img src="docs/images/pulse-grok.png" alt="Grok CLI: connection switch, synced remaining quota, shared pool, prepaid balance, and local usage" width="49%">
+  <img src="docs/images/pulse-claude-code.png" alt="Claude Code integration: isolated Hook/statusLine toggles, official quota, and local usage" width="49%">
+  <img src="docs/images/pulse-grok.png" alt="Grok CLI integration: shared leader toggle, synced remaining quota, prepaid balance, and CLI cost" width="49%">
+</p>
+<p align="center">
+  <img src="docs/images/pulse-antigravity.png" alt="Google Antigravity integration: 2.0 Desktop, IDE, and CLI tracking, Dynamic Island approval toggle, and multi-pool quotas" width="99%">
 </p>
 
-- **Usage and cost** show tokens, cache, project rank, and trend for a chosen period. Codex and Claude costs are token counts times public model prices: API-equivalent amounts, not subscription bills. Official Standard rates accept both the current and older table layouts. A failed refresh keeps the last valid prices.
-- **Activity Center** places official quota, community forecasts, the reset timeline, and local recovery records side by side, each with its source. A community forecast does not mean your account will reset.
-- **Session management** searches, exports Markdown or HTML, writes a raw backup, imports, and migrates. The list caches metadata and a short title. Full text is read from the original log only when you export it.
-- A registered Codex project can be renamed through the desktop project service that is already running. Pulse updates the list after the saved name reads back. Folders, paths, and session membership stay put. An open Codex sidebar may need the client reopened before it shows the new name.
-- A historical group with no registered Codex project can keep a Pulse-only display name, stored by its full path and kept across refresh and restart. A native project name wins.
-- Deleting a project can remove the sessions only, or move that project's independent folder and everything in it to the Trash. Moving the folder requires a unique registration, the original working directory, and the folder name typed back. Shared directories, nested projects, symlinks, and mismatched paths keep the session-only delete.
-- **Claude Code** is off by default. Turning it on backs up `settings.json` first and edits only Pulse's own entries. Turning it off restores the previous status line and leaves other tools alone. The island shows the current turn's public progress and real tool steps, including a Bash command description. After the monitor restarts, only sessions still marked busy in Claude's local registry come back.
-- **Grok CLI** is off by default. While it is on, a short-lived official CLI query checks the remaining quota every minute, and you can refresh immediately. Transient upstream or network failures retry briefly inside a fixed time limit. A lasting failure keeps the previous observation clearly marked. After the period actually ends, the old percentage is hidden. Context length is never shown as subscription quota. A live task has to match a process. Idle terminals and old completions do not announce again.
-- **Google Antigravity** is off by default. Turning it on aggregates local transcripts across Antigravity 2.0 Desktop, Antigravity IDE, and the `agy` CLI, separating AI Credits from multi-pool model quotas and marking internal codename models as unpriced lower bounds (`≥`). Optional lifecycle hooks (`~/.gemini/config/hooks.json`, without `PreToolUse` or auto-approval) and `agy` status-line forwarding back up existing files first and restore them cleanly when turned off. See [Google Antigravity integration](docs/antigravity-integration.md).
+- **Usage & Cost Analytics**: Inspect Token volume, cache ratios, and project rankings by week, month, or quarter. Costs for Codex, Claude, and Antigravity are estimated from public official API rates (not subscription invoices), with unpriced models surfaced honestly as `≥` lower bounds.
+- **Session Continuity**: Search, export to Markdown or HTML, back up raw logs, migrate folders, rename registered Codex projects via the running desktop service, or move verified standalone project folders to Trash with multi-step path safety checks.
+- **Reversible, Isolated Agent Integrations** (all disabled by default; existing configs are backed up before first edit):
+  - **Claude Code**: Manages only Pulse-marked entries in `settings.json` and restores your original status line when disabled. See [Claude Code integration](docs/claude-code-integration.md).
+  - **Grok CLI**: Manages only `cli.use_leader` in `$GROK_HOME/config.toml` and attaches to live same-UID `leader` sockets without restarting standalone terminals. See [Grok CLI integration](docs/grok-cli-integration.md) and [island question boundaries](docs/grok-island-questions.md).
+  - **Google Antigravity**: Scans local transcripts and SQLite summaries across 2.0 Desktop, IDE, and `agy` CLI (filtering subagents and checking `presence/*.lock` `flock` liveness), with optional `"codex-pulse"` hooks in `~/.gemini/config/hooks.json` and `agy` status-line forwarding. Local policy gates let routine operations proceed at sub-millisecond speed while surfacing `ask_question` and review-required tools in the Dynamic Island. See [Google Antigravity integration](docs/antigravity-integration.md).
 
-Automatic integration, only after you turn Grok on, manages the official shared-startup switch `cli.use_leader` and backs up the previous value first. Then run `grok` as usual. Pulse recognizes the session and project. It does not ask you to pick a folder or open a terminal. A standalone task that is already running stays where it is. A disconnect does not cancel the original request, and an unclear result is not sent again. Stopping Pulse monitoring leaves the switch as it is; the backup is there if you want the old value back. See [Grok CLI integration](docs/grok-cli-integration.md) and [island question boundaries](docs/grok-island-questions.md).
+---
 
-After first enabling integration, fully exit the existing Grok CLI once the current task finishes, then launch it again. `/new` creates a session inside the same process and does not reload shared-startup settings. Run `grok -c` in the original project directory to continue the most recent session. Without a shared connection, choices and approvals remain in the original Grok window.
+## Settings & Permissions
 
-## Settings
-
-Island, glass panel, and permissions are edited in Monitor Center and apply immediately. Large numbers use 万 and 亿 by default, for example `8,432`, `541万`, and `1.84亿`. You can switch to K / M / B. Amounts, percentages, and session counts stay as they are.
-
-The island at the top of Settings is the production component drawing a sample, labeled 示例数据. The glass panel beside it uses the signed-in account and is labeled read-only.
+Customize Dynamic Island materials, edge lighting, mascot size, glass panel modules, and number formatting (`万／亿` or `K / M / B`) with live production previews.
 
 <p align="center">
-  <img src="docs/images/pulse-island-settings.png" alt="Dynamic Island settings: production preview labeled as sample data, edge light, expanded width, and Clawd" width="49%">
-  <img src="docs/images/pulse-panel-settings.png" alt="Menu bar and panel settings: read-only preview of the signed-in account, quota windows, and number units" width="49%">
+  <img src="docs/images/pulse-island-settings.png" alt="Dynamic Island settings: live production preview, glass degree, edge light, and mascot size" width="49%">
+  <img src="docs/images/pulse-panel-settings.png" alt="Menu bar & panel settings: live read-only preview with 4-tile telemetry header and module toggles" width="49%">
 </p>
 
 <details>
-<summary>Installation and permissions</summary>
+<summary>Installation & Permissions (v2.1.0 · Build 36)</summary>
 <p align="center">
-  <img src="docs/images/pulse-setup.png" alt="Installation and permissions: v1.12.0 Build 34, notification permission, and task-monitoring connection" width="82%">
+  <img src="docs/images/pulse-setup.png" alt="Installation & permissions: v2.1.0 Build 36, shared Codex connection, and notification switches" width="84%">
 </p>
 </details>
 
-## Download and install
+---
 
-Download the build for this Mac from [GitHub Releases](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.0.0):
+## Download & Install
 
-| Mac processor | Installer |
+Download the installer matching your Mac from [GitHub Releases (`v2.1.0`)](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.1.0):
+
+| Mac Processor | Installer |
 |---|---|
-| Apple Silicon (M series) | [arm64 DMG](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.0.0/CodexNotchMonitor-v2.0.0-arm64.dmg) |
-| Intel | [x86_64 DMG](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.0.0/CodexNotchMonitor-v2.0.0-x86_64.dmg) |
+| **Apple Silicon (M1 / M2 / M3 / M4)** | [CodexNotchMonitor-v2.1.0-arm64.dmg](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.1.0/CodexNotchMonitor-v2.1.0-arm64.dmg) |
+| **Intel (`x86_64`)** | [CodexNotchMonitor-v2.1.0-x86_64.dmg](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.1.0/CodexNotchMonitor-v2.1.0-x86_64.dmg) |
 
-1. Open the DMG and drag the app into Applications.
-2. Launch it. Codex quota needs a signed-in Codex or ChatGPT Desktop on this Mac.
-3. Turn on notifications when you want reminders. The task-monitoring connection is under Installation and Permissions.
+1. Open the `.dmg` and drag **Agent Pulse** (`CodexNotchMonitor.app`) into `/Applications`.
+2. Launch the app. Codex quotas require a signed-in Codex or ChatGPT Desktop app; Claude Code, Grok CLI, and Google Antigravity can be enabled anytime in Monitor Center.
+3. Builds are ad-hoc signed and not notarized by Apple. If Gatekeeper prompts on first launch, verify `SHA256SUMS-v2.1.0.txt` on the Release page and allow the app in **System Settings → Privacy & Security**.
+4. Bundle ID (`com.coverai.codex-notch-monitor`), executable name, preferences, and local data directories remain unchanged across upgrades from Codex Pulse.
 
-The installer is ad-hoc signed and not notarized by Apple. If macOS blocks the first launch, confirm where the file came from, then allow it in System Settings → Privacy & Security.
+---
 
-The app was renamed to **Agent Pulse** (previously Codex Pulse / Codex Monitor). Its bundle ID, `CodexNotchMonitor.app` filename, preferences, and data directories keep their previous values, so an upgrade leaves settings and data in place. Check for Updates only opens the download page. You install the update yourself.
+## Data Sources & Privacy Boundaries
 
-## Where the data comes from
-
-| Content | Source |
+| Area | Source & Guarantee |
 |---|---|
-| Codex official quota and account | Local Codex App Server. The figure is a quota percentage and a reset time, not a remaining message count |
-| Claude / Grok / Antigravity quotas | Claude status line, official `grok` `_x.ai/billing`, and Antigravity `agy` status line (Gemini and partner pools shown separately from AI Credits) |
-| Quota forecast | Estimated from the used percentage and elapsed time in the current window. The first hour of a cycle has no forecast |
-| Tokens and project stats | Structured session logs still readable on this Mac, including cache |
-| Live tasks | Codex uses desktop IPC and local logs. Claude Code uses its dedicated Hook and local registry. Grok CLI uses local shared sockets matched to a process. Antigravity covers 2.0 Desktop, IDE, and CLI transcripts, presence locks, and lifecycle Hooks |
-| Cost | Codex, Claude, and Antigravity use tokens times published official rates. Grok uses the cost reported by the CLI for that turn. None of these are subscription bills. Unknown amounts are labeled |
-| Community posts and forecasts | Third-party aggregate [codex-reset.com](https://codex-reset.com/zh/tibo) |
-| Session account ownership | Only ownership Pulse actually observed. Sessions from before the baseline, or without enough evidence, stay Unassigned |
+| **Official Quotas & Plans** | Local Codex App Server, Claude status line, official `grok` `_x.ai/billing`, and Antigravity `agy` status line (`email` and unknown fields stripped) |
+| **Zero Credential Access** | **Never reads, saves, or uploads** `auth.json`, `.pbtxt`, OAuth tokens, cookies, API keys, or Keychain secrets |
+| **Live Tasks & Approvals** | Codex desktop IPC / turn-scoped OneNative proxy; isolated Claude & Antigravity Hooks (2-minute cap, fail-safe passthrough); same-UID Grok `leader` sockets |
+| **Tokens & Equivalent Cost** | Read-only local session logs (internal model `thinking` text is not read); costs are public API-rate estimates, not subscription charges |
 
-- Pulse does not read `auth.json`, cookies, API keys, Claude/Antigravity credentials, emails, or the Keychain. Local sessions, projects, and usage are not uploaded to the community source or the price catalog.
-- Codex task monitoring installs no Hook and does not write Codex client configuration.
-- Import, restore, delete, migrate, and manual quota reset start only when you choose them, and the scope is shown first. A quota reset asks a second time.
-- Readable exports hide sensitive body text by default. Raw backups and migration packages can contain source, prompts, and attachments. Keep them yourself.
+---
 
-## Build from source
-
-Requires the Swift 6 toolchain and macOS build tools. There are no third-party Swift Package dependencies.
+## Build & Verify from Source
 
 ```bash
-git clone https://github.com/suguxiaojie/agent-pulse.git
-cd agent-pulse
-./scripts/build-app.sh native        # Build for this Mac
-open build/CodexNotchMonitor.app
+# Run full unit and end-to-end regression suite (Codex / Claude / Grok / Antigravity)
+zsh scripts/test.sh
+
+# Build native Release app bundle or architecture-specific DMGs
+zsh scripts/build-app.sh arm64
+zsh scripts/build-dmg.sh arm64
+zsh scripts/build-dmg.sh x86_64
 ```
 
-```bash
-./scripts/test.sh                    # Full tests, including Claude, Grok, and Antigravity integration
-SKIP_COST_SMOKE_TESTS=1 ./scripts/test.sh
-./scripts/build-dmg.sh arm64         # Apple Silicon installer
-./scripts/build-dmg.sh x86_64        # Intel installer
-```
+## License
 
-More detail:
-
-- [In-island approvals](docs/island-approvals.md)
-- [Claude Code integration](docs/claude-code-integration.md)
-- [Grok CLI integration](docs/grok-cli-integration.md)
-- [Google Antigravity integration](docs/antigravity-integration.md)
-- [Compressed session history](docs/compressed-rollouts.md)
-- [Roadmap](ROADMAP.md)
-
-## Acknowledgments and license
-
-Thanks to [Codex Island](https://github.com/ericjypark/codex-island), [QuotaView](https://github.com/Duoasa/QuotaView), and [Open Claude UI](https://github.com/Caho1/open-claude-ui). Third-party sources and full licenses are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-This project is licensed under the [MIT License](LICENSE), Copyright (c) 2026 CoverAI. Agent Pulse is an independent project and is not affiliated with OpenAI, Anthropic, xAI, or Google.
-
-Support the project: [CoverAI's top-up service](https://www.coverai.store/).
+Released under the [MIT License](LICENSE). Third-party attributions are listed in [Resources/ThirdPartyNotices.txt](Resources/ThirdPartyNotices.txt).

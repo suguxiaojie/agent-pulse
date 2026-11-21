@@ -351,6 +351,137 @@ enum AntigravityRuntimeTests {
         print(String(format: "Island usage dashboard open latency: %.2f ms", openElapsedMs))
         expect(openElapsedMs < 120.0, "expanding usage dashboard completes well within responsive budget")
 
+        // 3c. Completed receipt duration lock + 60s expiry without 62s zombie resurrection (regression for 11:09:57 bug)
+        let zombieStart = now.addingTimeInterval(200)
+        let zombieActiveScan = AntigravityScanResult(
+            usage: historicalScan.usage,
+            sessions: [
+                AntigravitySessionRecord(
+                    id: "live-zombie",
+                    surface: .cli,
+                    cwd: "/Users/dev/PulseProject",
+                    title: "给你我所有的权限，帮我制作 Agent Pulse 的 2.5D 宣传片",
+                    model: "gemini-4-carbon-high",
+                    totalTokens: 1_500_000,
+                    isSubagent: false,
+                    isLockedLive: true,
+                    summaryBusy: true,
+                    summaryStatus: .running,
+                    caughtUp: true,
+                    turn: .init(
+                        turnID: "step-262",
+                        phase: .tool,
+                        startedAt: zombieStart,
+                        updatedAt: zombieStart.addingTimeInterval(90),
+                        tokens: 1_500_000,
+                        text: "验证后台预览服务",
+                        steps: [.init(id: "s269-0", title: "Verify HTTP 200 on Studio", status: "running")]
+                    )
+                )
+            ]
+        )
+        runtime.consume(zombieActiveScan, now: zombieStart.addingTimeInterval(91))
+        expect(runtime.rows.contains(where: { $0.id == "agy:live-zombie" && $0.phase == .usingTool }),
+               "zombie test turn observed active")
+
+        // Out-of-order Stop followed 2ms later by PostInvocation must NOT clear settled state or revive .working
+        let stopHookPayload = try JSONSerialization.data(withJSONObject: [
+            "hookEventName": "Stop",
+            "conversationId": "live-zombie",
+            "terminationReason": "NO_TOOL_CALL"
+        ])
+        let latePostPayload = try JSONSerialization.data(withJSONObject: [
+            "hookEventName": "PostInvocation",
+            "conversationId": "live-zombie"
+        ])
+        let turnRealEnd = zombieStart.addingTimeInterval(135) // 02:15 real duration
+        let zombieDoneScan = AntigravityScanResult(
+            usage: historicalScan.usage,
+            sessions: [
+                AntigravitySessionRecord(
+                    id: "live-zombie",
+                    surface: .cli,
+                    cwd: "/Users/dev/PulseProject",
+                    title: "给你我所有的权限，帮我制作 Agent Pulse 的 2.5D 宣传片",
+                    model: "gemini-4-carbon-high",
+                    totalTokens: 1_500_000,
+                    isSubagent: false,
+                    isLockedLive: false,
+                    summaryBusy: false,
+                    caughtUp: true,
+                    turn: .init(
+                        turnID: "step-262",
+                        phase: .completed,
+                        startedAt: zombieStart,
+                        updatedAt: turnRealEnd,
+                        tokens: 1_500_000,
+                        text: "已经全部在后台启动并核验可访问，直接点下面链接即可预览：",
+                        steps: [.init(id: "s269-0", title: "Verify HTTP 200 on Studio", status: "completed")]
+                    )
+                )
+            ]
+        )
+        // First evaluate natural transcript completion (without Stop hook) across 0s -> 16s -> 60s -> 62s -> 11h09m57s:
+        let detectedAt = turnRealEnd.addingTimeInterval(1) // t_detect = zombieStart + 136
+        runtime.consume(zombieDoneScan, now: detectedAt)
+        if let completedZombie = runtime.rows.first(where: { $0.id == "agy:live-zombie" }) {
+            expect(completedZombie.phase == .completed && !completedZombie.isRetainedReceipt,
+                   "completed turn starts as fresh receipt")
+            expect(completedZombie.updatedAt == turnRealEnd,
+                   "completed row updatedAt locks to transcript turn.updatedAt instead of wall clock")
+            expect(ActivityIslandFocusCard.clockTitle(row: completedZombie, at: detectedAt.addingTimeInterval(40_197)) == "02:15"
+                   && completedZombie.durationTitle(at: completedZombie.updatedAt) == "2m",
+                   "completed focus card clock reflects exact 02:15 turn runtime regardless of wall clock")
+        } else {
+            expect(false, "completed receipt must exist at t=0s")
+        }
+
+        runtime.consume(zombieDoneScan, now: detectedAt.addingTimeInterval(16))
+        if let retainedZombie = runtime.rows.first(where: { $0.id == "agy:live-zombie" }) {
+            expect(retainedZombie.isRetainedReceipt && retainedZombie.updatedAt == turnRealEnd,
+                   "at t=16s receipt becomes retained while keeping fixed updatedAt")
+        } else {
+            expect(false, "retained receipt must still exist in expanded rail at t=16s")
+        }
+
+        // At t = 60s: receipt expires and leaves rows
+        runtime.consume(zombieDoneScan, now: detectedAt.addingTimeInterval(60))
+        expect(!runtime.rows.contains(where: { $0.id == "agy:live-zombie" }),
+               "completed receipt removed promptly at 60s")
+
+        // At t = 62s, 124s, and 11h09m57s later: must NEVER resurrect or drift updatedAt!
+        for offset: TimeInterval in [62, 124, 40_197] {
+            runtime.consume(zombieDoneScan, now: detectedAt.addingTimeInterval(offset))
+            expect(runtime.rows.isEmpty,
+                   "expired completed turn stays gone at +\(Int(offset))s without 62s zombie loop")
+        }
+
+        // Verify out-of-order PostInvocation arriving 2ms after Stop also stays terminal and expires cleanly
+        let hookTurnStart = zombieStart.addingTimeInterval(500)
+        let preInvPayload = try JSONSerialization.data(withJSONObject: [
+            "hookEventName": "PreInvocation",
+            "conversationId": "live-hook-order",
+            "cwd": "/Users/dev/PulseProject",
+            "lastUserInput": "测试乱序 Hook"
+        ])
+        runtime.receive(.init(eventID: "ho-1", kind: "hook", awaitsDecision: false, payload: preInvPayload), receivedAt: hookTurnStart)
+        expect(runtime.rows.contains(where: { $0.id == "agy:live-hook-order" && $0.phase == .working }),
+               "hook-only turn starts working")
+        let stopOrderPayload = try JSONSerialization.data(withJSONObject: [
+            "hookEventName": "Stop",
+            "conversationId": "live-hook-order",
+            "terminationReason": "NO_TOOL_CALL"
+        ])
+        let latePostOrderPayload = try JSONSerialization.data(withJSONObject: [
+            "hookEventName": "PostInvocation",
+            "conversationId": "live-hook-order"
+        ])
+        runtime.receive(.init(eventID: "ho-2", kind: "hook", awaitsDecision: false, payload: stopOrderPayload), receivedAt: hookTurnStart.addingTimeInterval(10))
+        runtime.receive(.init(eventID: "ho-3", kind: "hook", awaitsDecision: false, payload: latePostOrderPayload), receivedAt: hookTurnStart.addingTimeInterval(10.002))
+        expect(!runtime.rows.contains(where: { $0.id == "agy:live-hook-order" && $0.phase.isActive }),
+               "late PostInvocation after Stop never revives active working state")
+        let _ = (stopHookPayload, latePostPayload)
+
         // 4. Glass Panel (296pt) multi-provider header & AntigravityGlanceContent never overflow horizontally
         let twoRowHeader = VStack(spacing: 6) {
             HStack(spacing: 6) {
@@ -362,14 +493,28 @@ enum AntigravityRuntimeTests {
             GlanceProviderSwitch(
                 selection: .constant(.antigravity),
                 available: [.codex, .claude, .grok, .antigravity],
-                fullWidth: true
+                fullWidth: true,
+                providerTones: [.codex: .critical, .claude: .calm, .grok: .calm, .antigravity: .calm],
+                providerRemaining: [.codex: 0, .claude: 78, .grok: 95, .antigravity: 93]
             )
         }
         .padding(.horizontal, GlanceLayout.contentInset)
-        .frame(width: GlanceLayout.width, height: 78)
+        .frame(width: GlanceLayout.width, height: 88)
         let headerHost = NSHostingView(rootView: twoRowHeader)
         headerHost.layoutSubtreeIfNeeded()
-        expect(headerHost.fittingSize.width <= GlanceLayout.width + 0.5, "2-row 4-provider Glance header fits strictly within 296pt")
+        expect(headerHost.fittingSize.width <= GlanceLayout.width + 0.5 && headerHost.fittingSize.height <= 88.5,
+               "2-row 4-provider telemetry tile Glance header fits strictly within 296x88pt")
+
+        let brandBounds = CGRect(x: 0, y: 0, width: 13, height: 13)
+        for (name, path) in [
+            ("Codex", CodexBrandMarkShape().path(in: brandBounds)),
+            ("Claude", ClaudeMarkShape().path(in: brandBounds)),
+            ("Grok", GrokBrandMarkShape().path(in: brandBounds)),
+            ("Antigravity", AntigravityMarkShape().path(in: brandBounds))
+        ] {
+            expect(!path.isEmpty && brandBounds.contains(path.boundingRect),
+                   "\(name) official vector mark produces non-empty path strictly within 13pt bounds")
+        }
 
         let glanceBody = AntigravityGlanceContent(
             runtime: runtime,
@@ -523,6 +668,100 @@ enum AntigravityRuntimeTests {
         rowCheckHost.layoutSubtreeIfNeeded()
         expect(rowCheckHost.fittingSize.height < 90,
                "long two-line SettingsRow keeps Toggle inline on the right instead of stacking below")
+
+        // 6. End-to-end PreToolUse interactive ask_question + tool approval round-trips
+        func spawnHelperHook(_ payload: [String: Any]) throws -> Task<Data, Error> {
+            let inputData = try JSONSerialization.data(withJSONObject: payload)
+            let helperURL = runtime.installer.installedHelperURL
+            let routePath = runtime.installer.routeURL.path
+            return Task.detached {
+                let proc = Process()
+                proc.executableURL = helperURL
+                proc.arguments = ["--antigravity-hook", "--configuration", routePath]
+                let inPipe = Pipe()
+                let outPipe = Pipe()
+                proc.standardInput = inPipe
+                proc.standardOutput = outPipe
+                proc.standardError = FileHandle.nullDevice
+                try proc.run()
+                try inPipe.fileHandleForWriting.write(contentsOf: inputData)
+                try inPipe.fileHandleForWriting.close()
+                let out = outPipe.fileHandleForReading.readDataToEndOfFile()
+                proc.waitUntilExit()
+                return out
+            }
+        }
+
+        // 6a. ask_question answered in Dynamic Island
+        let qTask = try spawnHelperHook([
+            "hookEventName": "PreToolUse",
+            "conversationId": "conv-interactive",
+            "cwd": "/Users/dev/AgentPulse",
+            "workspacePaths": ["/Users/dev/AgentPulse"],
+            "transcriptPath": "/Users/dev/.gemini/antigravity/brain/conv-interactive/transcript.jsonl",
+            "lastUserInput": "帮我重构面板",
+            "toolCall": [
+                "id": "call-ask-1",
+                "name": "ask_question",
+                "args": [
+                    "questions": [
+                        [
+                            "question": "请选择布局方案",
+                            "options": ["(Recommended) 方案 B", "方案 A"],
+                            "is_multi_select": false
+                        ]
+                    ]
+                ]
+            ]
+        ])
+        for _ in 0..<60 where runtime.requests.isEmpty {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        expect(runtime.requests.count == 1 && runtime.requests.first?.isQuestion == true,
+               "ask_question registered as pending interactive question")
+        expect(runtime.rows.contains(where: { $0.id == "agy:conv-interactive" && $0.phase == .waitingApproval && $0.waitReason == .userInput }),
+               "Dynamic Island row enters waitingApproval userInput state for ask_question")
+        let qReq = runtime.requests[0]
+        expect(runtime.respond(qReq.id, choice: .answer, answers: [qReq.questions[0].id: "(Recommended) 方案 B"]),
+               "island answer submission accepted")
+        let qOutData = try await qTask.value
+        let qOutText = String(decoding: qOutData, as: UTF8.self)
+        let qOutObj = try JSONSerialization.jsonObject(with: qOutData) as? [String: Any]
+        if qOutObj?["decision"] as? String != "deny" {
+            print("UNEXPECTED qOutText:", qOutText.debugDescription)
+        }
+        expect(qOutObj?["decision"] as? String == "deny" && (qOutObj?["reason"] as? String)?.contains("(Recommended) 方案 B") == true,
+               "ask_question answer returned to Antigravity turn via structured reason")
+
+        // 6b. Sensitive run_command approved once in Dynamic Island
+        let cmdTask = try spawnHelperHook([
+            "hookEventName": "PreToolUse",
+            "conversationId": "conv-interactive",
+            "cwd": "/Users/dev/AgentPulse",
+            "workspacePaths": ["/Users/dev/AgentPulse"],
+            "transcriptPath": "/Users/dev/.gemini/antigravity/brain/conv-interactive/transcript.jsonl",
+            "toolCall": [
+                "id": "call-cmd-1",
+                "name": "run_command",
+                "args": [
+                    "CommandLine": "git push origin main",
+                    "toolSummary": "Push main branch"
+                ]
+            ]
+        ])
+        for _ in 0..<60 where runtime.requests.isEmpty {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        expect(runtime.requests.count == 1 && runtime.requests.first?.isQuestion == false,
+               "sensitive run_command registered as pending tool approval")
+        expect(runtime.rows.contains(where: { $0.id == "agy:conv-interactive" && $0.phase == .waitingApproval && $0.waitReason == .approval }),
+               "Dynamic Island row enters waitingApproval approval state for sensitive command")
+        let cmdReq = runtime.requests[0]
+        expect(runtime.respond(cmdReq.id, choice: .approveOnce), "approveOnce accepted")
+        let cmdOutData = try await cmdTask.value
+        let cmdOutObj = try JSONSerialization.jsonObject(with: cmdOutData) as? [String: Any]
+        expect(cmdOutObj?["decision"] as? String == "auto_approve",
+               "explicit approveOnce outputs auto_approve to Antigravity")
 
         // Disable cleans up
         runtime.configure(enabled: false, hooks: true, statusLine: true)

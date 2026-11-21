@@ -42,6 +42,7 @@ struct ClaudeCodeRoute: Decodable {
     let statusLineSnapshotPath: String?
     let statusLineForwardCommand: String?
     let statusLineStackWithDefault: Bool?
+    let geminiDirectoryPath: String?
 
     static func read(from path: String) -> ClaudeCodeRoute? {
         let descriptor = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)

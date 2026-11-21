@@ -69,10 +69,10 @@ struct GlanceView: View {
             + (antigravity.enabled ? [.antigravity] : [])
     }
     private var usesTwoRowHeader: Bool {
-        availableProviders.count >= 3
+        availableProviders.count > 1
     }
     private var effectiveHeaderHeight: CGFloat {
-        usesTwoRowHeader ? 78 : GlanceLayout.headerHeight
+        usesTwoRowHeader ? 88 : GlanceLayout.headerHeight
     }
     private var claudeSnapshot: GlanceClaudeSnapshot {
         .init(limits: claude.limits, usage: claude.usage, statusLineEnabled: claude.statusLineEnabled, now: now)
@@ -169,7 +169,6 @@ struct GlanceView: View {
             if provider == .antigravity && !busy && refreshVisualState == .refreshing { finishManualRefresh() }
         }
         .onChange(of: provider) { _ in
-            readingHeight = nil
             page = .summary
             showsResetConfirmation = false
             refreshStartedAt = .distantPast
@@ -253,20 +252,15 @@ struct GlanceView: View {
                             )
                         } else {
                         if showPrimaryQuota { primaryQuota }
+                        if showCostEstimate || showTokenActivity { dayStrip }
                         if provider == .claude {
-                            if showCostEstimate || showTokenActivity { dayStrip }
-                            if claudeSnapshot.usageReady { dataBlocks }
-                            else if !showCostEstimate && !showTokenActivity {
-                                Text("正在统计 Claude 用量…").font(FloatingSurfaceTypography.label)
-                                    .frame(maxWidth: .infinity, alignment: .leading).weatherModule()
-                            }
-                        } else if hasCurrentAccountHistory {
-                            if showCostEstimate || showTokenActivity { dayStrip }
-                            if showCreditBalance || showDailyTokens || showThirtyDayTokens { dataBlocks }
-                        } else if showCostEstimate || showTokenActivity || showCreditBalance || showDailyTokens || showThirtyDayTokens {
-                            currentAccountHistoryEmptyState
+                            if showCostEstimate || showDailyTokens || showThirtyDayTokens { dataBlocks }
+                        } else {
+                            if showCreditBalance || showCostEstimate || showDailyTokens || showThirtyDayTokens { dataBlocks }
                         }
-                        if provider == .codex && showResetEntry { resetCreditCard(store.quotaResetCredits).weatherModule() }
+                        if provider == .codex && showResetEntry && !showPrimaryQuota {
+                            resetCreditCard(store.quotaResetCredits).weatherModule()
+                        }
                         }
                     }
                     .id(provider)
@@ -483,7 +477,8 @@ struct GlanceView: View {
                     available: availableProviders,
                     fullWidth: true,
                     activeColor: weatherColor,
-                    providerTones: providerTones
+                    providerTones: providerTones,
+                    providerRemaining: providerRemainingPercents
                 )
                 .disabled(store.isConsumingQuotaResetCredit || showsResetConfirmation)
             }
@@ -597,66 +592,160 @@ struct GlanceView: View {
         return map
     }
 
+    private func remainingPercent(for target: GlanceProvider) -> Int? {
+        switch target {
+        case .codex:
+            return primaryBucket?.limitingWindow?.remainingPercent
+        case .claude:
+            if let limiting = claudeSnapshot.limitingWindow {
+                return limiting.remainingPercent
+            }
+            return claudeSnapshot.rolledOverFiveHour ? 100 : nil
+        case .grok:
+            let displayNow = GrokDisplayClock.now(sampled: now)
+            guard let quota = grok.quota, quota.isAvailable(at: displayNow) else { return nil }
+            return quota.remainingPercent
+        case .antigravity:
+            guard antigravity.statusLineEnabled else { return nil }
+            let active = antigravity.quota?.activeWindows(at: now, staleCutoff: AntigravityQuotaSnapshot.uiStaleThreshold) ?? []
+            if let limiting = active.min(by: { $0.remainingPercent < $1.remainingPercent }) {
+                return limiting.remainingPercent
+            }
+            if antigravity.quota?.rolledOverGeminiFiveHour(at: now, staleCutoff: AntigravityQuotaSnapshot.uiStaleThreshold) != nil {
+                return 100
+            }
+            return nil
+        }
+    }
+
+    private var providerRemainingPercents: [GlanceProvider: Int?] {
+        var map: [GlanceProvider: Int?] = [:]
+        for item in availableProviders {
+            map[item] = remainingPercent(for: item)
+        }
+        return map
+    }
+
     private var weatherTone: GlanceTone { tone(for: provider) }
 
     private var weatherColor: Color { weatherTone.color }
 
     private var primaryQuota: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
-            VStack(alignment: .leading, spacing: 7) {
-                if let window = primaryWindow {
-                    let forecast = QuotaPaceForecast(window: window, now: context.date)
-                    let copy = forecast.copy(resetsAt: window.resetsAt, now: context.date)
-                    HStack(spacing: 5) {
-                        Text(compactWindowTitle(window)).font(.system(size: 11, weight: .medium)).foregroundStyle(secondaryText)
-                            .fixedSize()
-                        Spacer(minLength: 0)
-                        if provider == .codex && !usesTwoRowHeader && availableProviders.count > 1 { accountBadge }
+            if let window = primaryWindow {
+                let forecast = QuotaPaceForecast(window: window, now: context.date)
+                let copy = forecast.copy(resetsAt: window.resetsAt, now: context.date)
+                let otherWindows = quotaWindows.filter { $0 != window }
+                let secondaryWindow = otherWindows.first
+                let secondaryPercent: Int? = {
+                    if let sec = secondaryWindow { return sec.remainingPercent }
+                    if provider == .claude && claudeSnapshot.rolledOverFiveHour { return 100 }
+                    return nil
+                }()
+                let showsInlineReset = provider == .codex && showResetEntry
+                let footerLeftText: String? = {
+                    if let sec = secondaryWindow {
+                        return showsInlineReset
+                            ? "\(compactWindowTitle(sec)) \(sec.remainingPercent)%"
+                            : "\(compactWindowTitle(sec)) \(sec.remainingPercent)%"
                     }
-                    HStack(alignment: .firstTextBaseline, spacing: 2) {
-                        Text("\(window.remainingPercent)").font(.system(size: 64, weight: .semibold, design: .rounded))
-                            .monospacedDigit().contentTransition(.numericText())
-                        Text("%").font(.system(size: 27, weight: .medium, design: .rounded)).foregroundStyle(secondaryText)
-                    }.glanceReadableText()
-                    Text(copy.primary).font(.system(size: 12.5, weight: .medium)).glanceReadableText()
-                    Text(copy.secondary + (provider == .claude ? claudeSnapshot.observationSuffix() : "")).font(.system(size: 10.5)).foregroundStyle(tertiaryText)
                     if provider == .claude && claudeSnapshot.rolledOverFiveHour {
-                        Text("5 小时额度 100% · 已重置（待下次回复同步）")
-                            .font(.system(size: 10)).foregroundStyle(secondaryText)
+                        return "5 小时额度 100%"
                     }
-                    ForEach(Array(quotaWindows.filter { $0 != window }.enumerated()), id: \.offset) { _, other in
-                        Text("\(compactWindowTitle(other)) \(other.remainingPercent)% · \(resetText(other))")
-                            .font(.system(size: 10)).foregroundStyle(secondaryText)
+                    return provider == .claude ? "Claude 官方状态栏同步" : "官方配额实时同步"
+                }()
+                let footerRightText: String? = {
+                    if showsInlineReset { return nil }
+                    if let sec = secondaryWindow {
+                        return resetText(sec)
                     }
-                } else if provider == .claude && claudeSnapshot.rolledOverFiveHour {
-                    Text("5 小时额度").font(.system(size: 11, weight: .medium)).foregroundStyle(secondaryText)
-                    HStack(alignment: .firstTextBaseline, spacing: 2) {
-                        Text("100").font(.system(size: 64, weight: .semibold, design: .rounded)).monospacedDigit()
-                        Text("%").font(.system(size: 27, weight: .medium, design: .rounded)).foregroundStyle(secondaryText)
-                    }.glanceReadableText()
-                    Text("当前 5 小时周期已重置").font(.system(size: 12.5, weight: .medium)).glanceReadableText()
-                    Text("待下次 Claude 回复同步新周期重置时间").font(.system(size: 10.5)).foregroundStyle(tertiaryText)
-                } else if provider == .claude {
-                    Text("Claude 额度").font(FloatingSurfaceTypography.section)
-                    Text(claudeSnapshot.quotaPlaceholder ?? "等待 Claude Code 下一次回复后同步额度")
-                        .font(FloatingSurfaceTypography.label).foregroundStyle(tertiaryText)
+                    if provider == .claude && claudeSnapshot.rolledOverFiveHour {
+                        return "已重置（待同步）"
+                    }
+                    return nil
+                }()
+
+                GlanceHeroQuotaCard(
+                    title: compactWindowTitle(window),
+                    remainingPercent: window.remainingPercent,
+                    primaryCopy: copy.primary,
+                    secondaryCopy: copy.secondary + (provider == .claude ? claudeSnapshot.observationSuffix() : ""),
+                    weatherColor: weatherColor,
+                    secondaryRingPercent: secondaryPercent,
+                    footerLeft: footerLeftText,
+                    footerRight: footerRightText,
+                    isStale: provider == .claude && claudeSnapshot.isStale
+                ) {
+                    if provider == .codex && !usesTwoRowHeader && availableProviders.count > 1 {
+                        accountBadge
+                    }
+                } footerTrailing: {
+                    if showsInlineReset {
+                        inlineResetButton(store.quotaResetCredits)
+                    }
+                }
+            } else if provider == .claude && claudeSnapshot.rolledOverFiveHour {
+                GlanceHeroQuotaCard(
+                    title: "5 小时额度",
+                    remainingPercent: 100,
+                    primaryCopy: "当前 5 小时周期已重置",
+                    secondaryCopy: "待下次 Claude 回复同步新周期重置时间",
+                    weatherColor: weatherColor,
+                    footerLeft: "Claude 官方状态栏同步"
+                ) {
+                    EmptyView()
+                }
+            } else if provider == .claude {
+                GlanceEmptyQuotaCard(
+                    title: "Claude 额度",
+                    message: claudeSnapshot.quotaPlaceholder ?? "等待 Claude Code 下一次回复后同步额度"
+                ) {
+                    EmptyView()
+                } action: {
                     if !claude.statusLineEnabled {
                         Button("打开 Claude 设置") { onOpenCenter(.claude) }
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(weatherColor)
                             .buttonStyle(FloatingSurfaceButtonStyle())
                     }
-                } else {
-                    HStack {
-                        Text("Codex 额度").font(FloatingSurfaceTypography.section)
-                        Spacer(minLength: 0)
-                        if !usesTwoRowHeader && availableProviders.count > 1 { accountBadge }
+                }
+            } else {
+                GlanceEmptyQuotaCard(
+                    title: "Codex 额度",
+                    message: footerUpdateText == "数据可能过期" ? "额度加载失败" : "正在同步额度窗口…"
+                ) {
+                    if !usesTwoRowHeader && availableProviders.count > 1 {
+                        accountBadge
                     }
-                    Text(footerUpdateText == "数据可能过期" ? "额度加载失败" : "正在同步额度窗口…")
-                        .font(FloatingSurfaceTypography.label).foregroundStyle(tertiaryText)
+                } action: {
+                    if showResetEntry {
+                        inlineResetButton(store.quotaResetCredits)
+                    }
                 }
             }
-            .frame(maxWidth: .infinity, minHeight: 156, alignment: .leading)
-            .padding(.vertical, 6)
         }
+    }
+
+    private func inlineResetButton(_ summary: QuotaResetCreditSummary?) -> some View {
+        Button {
+            withAnimation(reduceMotion ? nil : FloatingSurfaceTheme.selectionMotion) {
+                page = .quotaReset
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Text(summary.map { $0.availableCount > 0 ? "重置 \($0.availableCount) 次可用" : "额度重置" } ?? "额度重置")
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .semibold))
+            }
+            .font(.system(size: 9.5, weight: .semibold))
+            .foregroundStyle(weatherColor)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(FloatingSurfaceButtonStyle())
+        .accessibilityLabel(
+            "额度重置，\(summary.map { ChineseDisplayText.count($0.availableCount, unit: "次可用") } ?? "可用次数未知")，\(resetCreditExpirationText(summary))"
+        )
+        .accessibilityHint("打开额度重置确认页面")
     }
 
     private var usesCostStrip: Bool { showCostEstimate && (!showTokenActivity || stripMetric != "token") }
@@ -668,11 +757,18 @@ struct GlanceView: View {
             : (usesCostStrip
                 ? selectedCostScope.costActivity.map { GlanceDayStrip.Sample(date: $0.date, value: $0.dollars) }
                 : selectedCostScope.usage.activity.map { GlanceDayStrip.Sample(date: $0.date, value: Double($0.tokens)) })
+        let codexReady = hasCurrentAccountHistory && selectedCostScope.usage.activityIsReady
+        let codexLoadingMessage: String = {
+            if !hasCurrentAccountHistory {
+                return currentAccount == nil ? "正在识别当前 Codex 账号…" : "当前账号暂无已归属本地用量"
+            }
+            return "用量明细尚未就绪"
+        }()
         return GlanceWeatherStrip(buckets: GlanceDayStrip.buckets(samples: entries, now: now),
-            isCost: usesCostStrip, isReady: provider == .claude ? snapshot.usageReady : selectedCostScope.usage.activityIsReady,
+            isCost: usesCostStrip, isReady: provider == .claude ? snapshot.usageReady : codexReady,
             showsSelector: showCostEstimate && showTokenActivity, metric: $stripMetric, color: weatherColor,
             unknownModels: provider == .claude ? [] : selectedCostScope.unknownModels,
-            loadingText: provider == .claude ? "正在统计 Claude 用量…" : "用量明细尚未就绪",
+            loadingText: provider == .claude ? "正在统计 Claude 用量…" : codexLoadingMessage,
             tokenSourceLabel: provider == .claude ? "本机 Claude 用量" : "当前账号本地用量",
             unpricedDates: provider == .claude ? snapshot.unpricedDates : [])
     }
@@ -680,17 +776,26 @@ struct GlanceView: View {
     private var dataBlocks: some View {
         HStack(spacing: 6) {
             if provider == .claude {
-                if showDailyTokens { dataBlock("今日 Token", value: GlanceDayStrip.tokenText(Double(claudeSnapshot.todayTokens))) }
-                if showThirtyDayTokens { dataBlock("30 日 Token", value: GlanceDayStrip.tokenText(Double(claudeSnapshot.monthlyTokens))) }
-                dataBlock("累计 Token", value: claudeSnapshot.lifetimeTokens.map { GlanceDayStrip.tokenText(Double($0)) } ?? "—")
+                let ready = claudeSnapshot.usageReady
+                if showCostEstimate {
+                    dataBlock("今日成本", value: ready ? GlanceDayStrip.metricCardCostText(claudeSnapshot.todayCost) : "—")
+                }
+                if showDailyTokens { dataBlock("今日 Token", value: ready ? GlanceDayStrip.tokenText(Double(claudeSnapshot.todayTokens)) : "—") }
+                if showThirtyDayTokens { dataBlock("30 日 Token", value: ready ? GlanceDayStrip.tokenText(Double(claudeSnapshot.monthlyTokens)) : "—") }
+                if !showCostEstimate && !showDailyTokens && !showThirtyDayTokens {
+                    dataBlock("累计 Token", value: ready ? (claudeSnapshot.lifetimeTokens.map { GlanceDayStrip.tokenText(Double($0)) } ?? "—") : "—")
+                }
             } else {
+                let ready = hasCurrentAccountHistory
                 if showCreditBalance {
                     dataBlock("Credits", value: CreditBalanceFormatter.summary(primaryBucket?.creditBalance))
                         .help("完整余额：" + CreditBalanceFormatter.string(primaryBucket?.creditBalance))
                         .accessibilityValue(CreditBalanceFormatter.string(primaryBucket?.creditBalance))
+                } else if showCostEstimate {
+                    dataBlock("今日成本", value: ready ? GlanceDayStrip.metricCardCostText(selectedCostScope.today.dollars) : "—")
                 }
-                if showDailyTokens { dataBlock("今日 Token", value: compactTokens(selectedCostScope.usage.day.tokens)) }
-                if showThirtyDayTokens { dataBlock("30 日 Token", value: compactTokens(selectedCostScope.usage.month.tokens)) }
+                if showDailyTokens { dataBlock("今日 Token", value: ready ? compactTokens(selectedCostScope.usage.day.tokens) : "—") }
+                if showThirtyDayTokens { dataBlock("30 日 Token", value: ready ? compactTokens(selectedCostScope.usage.month.tokens) : "—") }
             }
         }
     }

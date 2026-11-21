@@ -175,9 +175,70 @@ final class MonitorStore: ObservableObject {
             .union(claude.requests.map(\.id))
             .union(sharedQuestions.snapshots.values.map(\.identity))
             .union(grok.questions.map(\.id))
+            .union(antigravity.requests.map(\.id))
     }
     func islandApproval(for row: ActivitySessionSnapshot) -> IslandApprovalContent {
         if row.provider == "Antigravity" {
+            if let request = antigravity.requests.first(where: {
+                "agy:" + $0.conversationID == row.sessionID && row.replyRequestIDs.contains($0.id)
+            }) {
+                let fallbackTitle = antigravity.fallbackTitle(for: request.surface)
+                var value = IslandApprovalContent(
+                    id: request.id,
+                    provider: row.provider,
+                    title: request.isQuestion ? "需要回答" : "请求使用 " + request.displayToolName,
+                    summary: request.isQuestion ? "" : request.summaryText,
+                    command: !request.isQuestion && request.isCommandStyle,
+                    deadline: request.deadline,
+                    fallbackTitle: fallbackTitle
+                )
+                if request.isQuestion {
+                    value.questions = request.questions.map { q in
+                        .init(
+                            id: q.id,
+                            title: q.text,
+                            options: q.options,
+                            allowsText: true,
+                            multiSelect: q.multiSelect,
+                            descriptions: q.descriptions
+                        )
+                    }
+                    value.actions = [.init(id: "deny", title: "取消提问", destructive: true)]
+                } else {
+                    value.actions = [
+                        .init(id: "once", title: "批准一次"),
+                        .init(id: "deny", title: "拒绝", destructive: true)
+                    ]
+                }
+                value.submit = { [weak self] action, answers in
+                    guard let self else { return "已交回 " + request.surface.displayName }
+                    guard self.antigravity.requests.contains(where: { $0.id == request.id }),
+                          Date() < request.deadline else {
+                        return "请求已失效，请在 \(request.surface.displayName) 中查看"
+                    }
+                    let choice: AntigravityPermissionRequest.Choice
+                    switch action {
+                    case "answers":
+                        guard request.permitsIslandAnswers(answers) else {
+                            return "请选择选项或输入有效回答"
+                        }
+                        choice = .answer
+                    case "once":
+                        choice = .approveOnce
+                    case "deny":
+                        choice = .deny
+                    default:
+                        return "请在 \(request.surface.displayName) 中处理"
+                    }
+                    guard self.antigravity.respond(request.id, choice: choice, answers: answers) else {
+                        return "请求已变化，请在 \(request.surface.displayName) 中确认"
+                    }
+                    return request.isQuestion ? "已提交回答，等待 Antigravity 继续执行" : "已发送审批决定，等待 Antigravity 响应"
+                }
+                value.fallback = { [weak self] in self?.antigravity.returnToClient(request.id) }
+                value.details = { [weak self] in self?.antigravity.showRequests() }
+                return value
+            }
             return .init(
                 id: row.id + "-antigravity",
                 provider: row.provider,

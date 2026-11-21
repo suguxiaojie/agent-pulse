@@ -2,11 +2,13 @@ import AppKit
 import Combine
 import Darwin
 import Foundation
+import SwiftUI
 
 @MainActor
 final class AntigravityRuntime: ObservableObject {
     @Published private(set) var enabled: Bool
     @Published private(set) var hooksEnabled: Bool
+    @Published private(set) var approvalsEnabled: Bool
     @Published private(set) var statusLineEnabled: Bool
     @Published private(set) var configuring = false
     @Published private(set) var status = "未启用"
@@ -14,6 +16,7 @@ final class AntigravityRuntime: ObservableObject {
     @Published private(set) var quota: AntigravityQuotaSnapshot?
     @Published private(set) var usage: AntigravityUsageSummary?
     @Published private(set) var rows: [ActivitySessionSnapshot] = []
+    @Published private(set) var requests: [AntigravityPermissionRequest] = []
     @Published private(set) var installation: AntigravityInstallationStatus
     @Published private(set) var scanning = false
 
@@ -30,8 +33,10 @@ final class AntigravityRuntime: ObservableObject {
     private var running = false
     private var timer: Timer?
     private var scanTask: Task<Void, Never>?
-    private var desiredConfiguration: (enabled: Bool, hooks: Bool, statusLine: Bool)?
+    private var desiredConfiguration: (enabled: Bool, hooks: Bool, approvals: Bool, statusLine: Bool)?
     private var bufferedHooks: [(message: ClaudeCodeBridgeMessage, receivedAt: Date)] = []
+    private var requestTimeouts: [String: DispatchWorkItem] = [:]
+    private var requestWindow: NSWindow?
 
     private struct HookOverlay {
         var surface: AntigravitySurface
@@ -48,10 +53,19 @@ final class AntigravityRuntime: ObservableObject {
         var turnIndex: Int = 0
     }
 
+    private struct SettledTurn {
+        var phase: TaskPhase
+        var endReason: SessionEndReason
+        /// Actual terminal timestamp of the turn (locks elapsed duration display).
+        var endedAt: Date
+        /// Wall-clock timestamp when Pulse first entered receipt retention (drives 15s/60s expiry).
+        var settledAt: Date
+    }
+
     private var hookOverlays: [String: HookOverlay] = [:]
     private var sessionSurfaces: [String: AntigravitySurface] = [:]
     private var observedActiveTurns: Set<String> = []
-    private var settledTurns: [String: (phase: TaskPhase, endReason: SessionEndReason, settledAt: Date)] = [:]
+    private var settledTurns: [String: SettledTurn] = [:]
     private var receipts: [String: ActivitySessionSnapshot] = [:]
     private var lastScan: AntigravityScanResult?
     private var lastStatusLineFileMTime: TimeInterval = 0
@@ -69,6 +83,7 @@ final class AntigravityRuntime: ObservableObject {
         self.configurationQueue = configurationQueue
         self.enabled = defaults.bool(forKey: "antigravity.enabled")
         self.hooksEnabled = defaults.object(forKey: "antigravity.hooks") as? Bool ?? true
+        self.approvalsEnabled = defaults.object(forKey: "antigravity.approvals") as? Bool ?? true
         self.statusLineEnabled = defaults.object(forKey: "antigravity.statusLine") as? Bool ?? true
 
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -91,7 +106,7 @@ final class AntigravityRuntime: ObservableObject {
         running = true
         refreshInstallation()
         if enabled {
-            configure(enabled: true, hooks: hooksEnabled, statusLine: statusLineEnabled, startup: true)
+            configure(enabled: true, hooks: hooksEnabled, approvals: approvalsEnabled, statusLine: statusLineEnabled, startup: true)
         }
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
@@ -108,10 +123,12 @@ final class AntigravityRuntime: ObservableObject {
         scanning = false
         configuring = false
         desiredConfiguration = nil
+        passthroughAllPendingRequests()
         stopBridge()
         bufferedHooks.removeAll()
         hookOverlays.removeAll()
         sessionSurfaces.removeAll()
+        observedActiveTurns.removeAll()
         settledTurns.removeAll()
         receipts.removeAll()
         rows = []
@@ -127,10 +144,11 @@ final class AntigravityRuntime: ObservableObject {
             configure(
                 enabled: desiredConfiguration.enabled,
                 hooks: desiredConfiguration.hooks,
+                approvals: desiredConfiguration.approvals,
                 statusLine: desiredConfiguration.statusLine
             )
         } else {
-            configure(enabled: enabled, hooks: hooksEnabled, statusLine: statusLineEnabled)
+            configure(enabled: enabled, hooks: hooksEnabled, approvals: approvalsEnabled, statusLine: statusLineEnabled)
         }
     }
 
@@ -143,9 +161,10 @@ final class AntigravityRuntime: ObservableObject {
         refreshActivity(manual: true)
     }
 
-    func configure(enabled target: Bool, hooks: Bool, statusLine: Bool, startup: Bool = false) {
+    func configure(enabled target: Bool, hooks: Bool, approvals: Bool? = nil, statusLine: Bool, startup: Bool = false) {
         guard !configuring else { return }
-        desiredConfiguration = (target, hooks, statusLine)
+        let resolvedApprovals = approvals ?? self.approvalsEnabled
+        desiredConfiguration = (target, hooks, resolvedApprovals, statusLine)
         configuring = true
         error = nil
         status = "配置中"
@@ -155,6 +174,9 @@ final class AntigravityRuntime: ObservableObject {
         scanTask = nil
         scanning = false
 
+        if !target || !hooks || !resolvedApprovals {
+            passthroughAllPendingRequests()
+        }
         if !target || !statusLine {
             quota = nil
         }
@@ -169,7 +191,7 @@ final class AntigravityRuntime: ObservableObject {
         configurationQueue.async { [weak self] in
             let result: Result<Void, Error> = Result {
                 if target && (hooks || statusLine) {
-                    try installer.install(.init(hooks: hooks, statusLine: statusLine))
+                    try installer.install(.init(hooks: hooks, interactiveApprovals: resolvedApprovals, statusLine: statusLine))
                 } else {
                     try installer.uninstall()
                 }
@@ -181,6 +203,7 @@ final class AntigravityRuntime: ObservableObject {
                 case .failure(let failure):
                     self.status = "需要处理"
                     self.error = failure.localizedDescription
+                    self.passthroughAllPendingRequests()
                     self.bufferedHooks.removeAll()
                     self.stopBridge()
                     if !startup {
@@ -192,11 +215,14 @@ final class AntigravityRuntime: ObservableObject {
                 case .success:
                     self.enabled = target
                     self.hooksEnabled = hooks
+                    self.approvalsEnabled = resolvedApprovals
                     self.statusLineEnabled = statusLine
                     self.defaults.set(target, forKey: "antigravity.enabled")
                     self.defaults.set(hooks, forKey: "antigravity.hooks")
+                    self.defaults.set(resolvedApprovals, forKey: "antigravity.approvals")
                     self.defaults.set(statusLine, forKey: "antigravity.statusLine")
                     if !target {
+                        self.passthroughAllPendingRequests()
                         self.usage = nil
                         self.quota = nil
                         self.hookOverlays.removeAll()
@@ -238,7 +264,9 @@ final class AntigravityRuntime: ObservableObject {
     private func connectionStatusSummary() -> String {
         guard enabled else { return "未启用" }
         var parts: [String] = []
-        if hooksEnabled { parts.append("三端 Hook 已就绪") }
+        if hooksEnabled {
+            parts.append(approvalsEnabled ? "三端 Hook 与岛内审批已就绪" : "三端 Hook 已就绪")
+        }
         if statusLineEnabled { parts.append("CLI 状态栏已就绪") }
         if parts.isEmpty { parts.append("仅本地日志只读扫描") }
         return parts.joined(separator: " · ")
@@ -254,7 +282,12 @@ final class AntigravityRuntime: ObservableObject {
                 guard let self, self.bridgeGeneration == epoch, self.running else { return }
                 self.receive(message, receivedAt: receivedAt)
             }
-        }, onDisconnect: { _ in })
+        }, onDisconnect: { [weak self] eventID in
+            Task { @MainActor in
+                guard let self, self.bridgeGeneration == epoch else { return }
+                self.handleDisconnectedRequest(eventID)
+            }
+        })
         bridgeListening = true
     }
 
@@ -469,12 +502,16 @@ final class AntigravityRuntime: ObservableObject {
     func receive(_ message: ClaudeCodeBridgeMessage, receivedAt: Date = Date()) {
         guard (configuring ? desiredConfiguration?.enabled == true : enabled),
               let object = (try? JSONSerialization.jsonObject(with: message.payload)) as? [String: Any] else {
-            bridge.resolve(eventID: message.eventID, decision: nil)
+            if message.awaitsDecision {
+                bridge.resolve(eventID: message.eventID, decision: ["decision": "allow"])
+            }
             return
         }
-        bridge.resolve(eventID: message.eventID, decision: nil)
 
         if message.kind == "statusLine" {
+            if message.awaitsDecision {
+                bridge.resolve(eventID: message.eventID, decision: ["decision": "allow"])
+            }
             guard configuring ? desiredConfiguration?.statusLine == true : statusLineEnabled else { return }
             if let decoded = AntigravityQuotaSnapshot.decode(object: object, fallbackDate: receivedAt) {
                 quota = decoded.mergingMetadata(from: quota)
@@ -506,15 +543,29 @@ final class AntigravityRuntime: ObservableObject {
             return
         }
 
-        guard configuring ? desiredConfiguration?.hooks == true : hooksEnabled else { return }
+        guard configuring ? desiredConfiguration?.hooks == true : hooksEnabled else {
+            if message.awaitsDecision {
+                bridge.resolve(eventID: message.eventID, decision: ["decision": "allow"])
+            }
+            return
+        }
         if configuring {
+            if message.awaitsDecision {
+                bridge.resolve(eventID: message.eventID, decision: ["decision": "allow"])
+                return
+            }
             if bufferedHooks.count >= 256 { bufferedHooks.removeFirst() }
             bufferedHooks.append((message, receivedAt))
             return
         }
 
         guard let id = object["conversationId"] as? String, !id.isEmpty, id.utf8.count <= 256,
-              let event = object["hookEventName"] as? String else { return }
+              let event = object["hookEventName"] as? String else {
+            if message.awaitsDecision {
+                bridge.resolve(eventID: message.eventID, decision: ["decision": "allow"])
+            }
+            return
+        }
 
         status = "已连接"
         let transcriptPath = object["transcriptPath"] as? String ?? ""
@@ -541,6 +592,10 @@ final class AntigravityRuntime: ObservableObject {
             overlay.title = userInput
         }
 
+        if event != "PreToolUse", message.awaitsDecision {
+            bridge.resolve(eventID: message.eventID, decision: ["decision": "allow"])
+        }
+
         switch event {
         case "SessionStart":
             hookOverlays[id] = overlay
@@ -561,12 +616,54 @@ final class AntigravityRuntime: ObservableObject {
             }
             hookOverlays[id] = overlay
 
+        case "PreToolUse":
+            clearSettledTurns(forConversationID: id)
+            overlay.endReason = nil
+            if let tool = object["toolCall"] as? [String: Any],
+               let name = tool["name"] as? String {
+                let stepID = (tool["id"] as? String) ?? "hook-\(overlay.steps.count)"
+                let summary = (tool["summary"] as? String)
+                let title = AntigravityScanner.toolDisplayTitle(
+                    name: name,
+                    args: (tool["args"] as? [String: Any]) ?? summary.map { ["toolSummary": $0] }
+                )
+                let stepState: IslandStep.State = message.awaitsDecision ? .waiting : .running
+                if let idx = overlay.steps.firstIndex(where: { $0.id == stepID }) {
+                    overlay.steps[idx].state = stepState
+                } else {
+                    overlay.steps.append(.init(id: stepID, title: title, state: stepState))
+                    if overlay.steps.count > 32 { overlay.steps.removeFirst(overlay.steps.count - 32) }
+                }
+            }
+            if message.awaitsDecision {
+                if approvalsEnabled, let req = AntigravityPermissionRequest.decode(message, receivedAt: receivedAt) {
+                    if overlay.turnIndex == 0 {
+                        overlay.turnIndex = 1
+                        overlay.startedAt = overlay.startedAt ?? receivedAt
+                    }
+                    overlay.phase = .waitingApproval
+                    overlay.actionText = req.isQuestion
+                        ? (req.questions.first?.text ?? "等待回答问题")
+                        : "请求使用 \(req.displayToolName)"
+                    enqueuePermissionRequest(req)
+                } else {
+                    bridge.resolve(eventID: message.eventID, decision: ["decision": "allow"])
+                    overlay.phase = .usingTool
+                }
+            } else {
+                overlay.phase = .usingTool
+            }
+            hookOverlays[id] = overlay
+
         case "PostToolUse":
             clearSettledTurns(forConversationID: id)
             overlay.endReason = nil
             overlay.phase = .working
             if let tool = object["toolCall"] as? [String: Any],
                let name = tool["name"] as? String {
+                if let callID = tool["id"] as? String, !callID.isEmpty {
+                    clearRequests(forConversationID: id, matchingToolCallID: callID)
+                }
                 let stepID = (tool["id"] as? String) ?? "hook-\(overlay.steps.count)"
                 let summary = (tool["summary"] as? String)
                 let title = AntigravityScanner.toolDisplayTitle(
@@ -586,13 +683,14 @@ final class AntigravityRuntime: ObservableObject {
             refreshActivity()
 
         case "PostInvocation":
-            clearSettledTurns(forConversationID: id)
             if overlay.endReason == nil {
+                clearSettledTurns(forConversationID: id)
                 overlay.phase = .working
             }
             hookOverlays[id] = overlay
 
         case "Stop":
+            clearRequests(forConversationID: id, matchingToolCallID: nil)
             let reason = (object["terminationReason"] as? String) ?? "NO_TOOL_CALL"
             overlay.steps = overlay.steps.map { $0.endingTask() }
             let terminalPhase: TaskPhase
@@ -612,7 +710,12 @@ final class AntigravityRuntime: ObservableObject {
             overlay.endReason = terminalEnd
             hookOverlays[id] = overlay
             if let existingTurn = rows.first(where: { $0.id == "agy:" + id })?.turnID {
-                settledTurns["agy:\(id):\(existingTurn)"] = (terminalPhase, terminalEnd, receivedAt)
+                settledTurns["agy:\(id):\(existingTurn)"] = SettledTurn(
+                    phase: terminalPhase,
+                    endReason: terminalEnd,
+                    endedAt: receivedAt,
+                    settledAt: receivedAt
+                )
             }
             refreshActivity()
 
@@ -632,7 +735,10 @@ final class AntigravityRuntime: ObservableObject {
     private func tick() {
         guard enabled, !configuring else { return }
         loadPersistedStatusLineSnapshot()
-        pruneExpiredReceipts(now: Date())
+        let now = Date()
+        if pruneExpiredReceipts(now: now), let lastScan {
+            projectRows(lastScan, now: now)
+        }
         refreshActivity()
     }
 
@@ -684,25 +790,36 @@ final class AntigravityRuntime: ObservableObject {
             let resolvedTurnID = turn.turnID ?? overlay.map { "hook-\($0.turnIndex)" }
             guard let turnID = resolvedTurnID else { continue }
             let turnKey = "\(rowID):\(turnID)"
+            if let staleReceipt = receipts[rowID], staleReceipt.turnID != turnID {
+                receipts.removeValue(forKey: rowID)
+            }
+            if rows.contains(where: { $0.id == rowID && $0.phase.isActive && ($0.turnID?.hasPrefix("hook-") == true) }) {
+                observedActiveTurns.insert(turnKey)
+            }
+            let sessionTurnPrefix = "\(rowID):"
+            for key in Array(observedActiveTurns) where key.hasPrefix(sessionTurnPrefix) && key != turnKey {
+                observedActiveTurns.remove(key)
+            }
             let previous = rows.first { $0.id == rowID && $0.turnID == turnID }
 
             var phase: TaskPhase
             var endReason: SessionEndReason?
+            var terminalEndedAt: Date?
             var waitReason: CodexActivityWaitReason?
             var replyIDs: Set<String> = []
 
-            let summaryStopped: SessionEndReason? = {
+            let summaryStopped: (reason: SessionEndReason, endedAt: Date)? = {
                 switch session.summaryStatus {
                 case .killed:
-                    return .ended
+                    return (.ended, now)
                 case .canceling:
-                    return .cancelled
+                    return (.cancelled, now)
                 case .idle(let modifiedAt):
                     if let modifiedAt, modifiedAt >= turn.updatedAt.addingTimeInterval(-0.5) {
-                        return .cancelled
+                        return (.cancelled, min(now, modifiedAt))
                     }
                     if now.timeIntervalSince(turn.updatedAt) >= 2.0 {
-                        return .cancelled
+                        return (.cancelled, min(now, modifiedAt ?? now))
                     }
                     return nil
                 case .running, .unknown:
@@ -711,11 +828,12 @@ final class AntigravityRuntime: ObservableObject {
             }()
 
             if let existingSettled = settledTurns[turnKey] {
+                let baseline = max(existingSettled.endedAt, existingSettled.settledAt)
                 let resumedByTranscript = (turn.isActive || session.summaryStatus == .running)
-                    && turn.updatedAt > existingSettled.settledAt.addingTimeInterval(0.5)
+                    && turn.updatedAt > baseline.addingTimeInterval(0.5)
                 let resumedByOverlay = live
                     && overlay?.phase?.isActive == true
-                    && (overlay?.updatedAt ?? .distantPast) > existingSettled.settledAt.addingTimeInterval(0.5)
+                    && (overlay?.updatedAt ?? .distantPast) > baseline.addingTimeInterval(0.5)
                 if resumedByTranscript || resumedByOverlay {
                     settledTurns.removeValue(forKey: turnKey)
                 }
@@ -728,15 +846,28 @@ final class AntigravityRuntime: ObservableObject {
             if let settled = settledTurns[turnKey] {
                 phase = settled.phase
                 endReason = settled.endReason
-            } else if turn.isActive, let stopReason = summaryStopped, !activeOverlayNewerThanTurn {
+                terminalEndedAt = settled.endedAt
+            } else if turn.isActive, let stop = summaryStopped, !activeOverlayNewerThanTurn {
                 phase = .ended
-                endReason = stopReason
-                settledTurns[turnKey] = (phase, stopReason, now)
+                endReason = stop.reason
+                terminalEndedAt = stop.endedAt
+                settledTurns[turnKey] = SettledTurn(
+                    phase: phase,
+                    endReason: stop.reason,
+                    endedAt: stop.endedAt,
+                    settledAt: now
+                )
             } else if let ov = overlay, ov.updatedAt > turn.updatedAt, let ovPhase = ov.phase {
                 if ovPhase.isActive && !live {
                     phase = .ended
                     endReason = .ended
-                    settledTurns[turnKey] = (.ended, .ended, now)
+                    terminalEndedAt = now
+                    settledTurns[turnKey] = SettledTurn(
+                        phase: .ended,
+                        endReason: .ended,
+                        endedAt: now,
+                        settledAt: now
+                    )
                 } else if ovPhase.isActive && live && turn.phase == .waitingQuestion {
                     phase = .waitingApproval
                     endReason = nil
@@ -749,7 +880,14 @@ final class AntigravityRuntime: ObservableObject {
                     phase = ovPhase
                     endReason = ov.endReason
                     if let er = ov.endReason {
-                        settledTurns[turnKey] = (ovPhase, er, ov.updatedAt)
+                        let endedAt = ov.updatedAt > .distantPast ? min(now, ov.updatedAt) : now
+                        terminalEndedAt = endedAt
+                        settledTurns[turnKey] = SettledTurn(
+                            phase: ovPhase,
+                            endReason: er,
+                            endedAt: endedAt,
+                            settledAt: now
+                        )
                     }
                 }
             } else {
@@ -757,33 +895,48 @@ final class AntigravityRuntime: ObservableObject {
                 case .working:
                     phase = live ? .working : .ended
                     endReason = live ? nil : .ended
+                    if !live { terminalEndedAt = now }
                 case .tool:
                     phase = live ? .usingTool : .ended
                     endReason = live ? nil : .ended
+                    if !live { terminalEndedAt = now }
                 case .waitingQuestion:
                     phase = live ? .waitingApproval : .ended
                     endReason = live ? nil : .ended
                     if live {
                         waitReason = .userInput
                         replyIDs = ["\(turnKey):question"]
+                    } else {
+                        terminalEndedAt = now
                     }
                 case .completed:
                     phase = .completed
                     endReason = .completed
+                    terminalEndedAt = turn.updatedAt > .distantPast ? min(now, turn.updatedAt) : now
                 case .failed:
                     phase = .failed
                     endReason = .failed
+                    terminalEndedAt = turn.updatedAt > .distantPast ? min(now, turn.updatedAt) : now
                 case .cancelled:
                     phase = .ended
                     endReason = .cancelled
+                    terminalEndedAt = turn.updatedAt > .distantPast ? min(now, turn.updatedAt) : now
                 case .idle:
                     continue
                 }
             }
 
-            let wasObservedActive = observedActiveTurns.contains(turnKey)
+            let sessionRequests = requests.filter { $0.conversationID == session.id && now < $0.deadline }
+            if let latestReq = sessionRequests.last {
+                phase = .waitingApproval
+                endReason = nil
+                waitReason = latestReq.isQuestion ? .userInput : .approval
+                replyIDs = Set(sessionRequests.map(\.id))
+            }
+
+            let wasObservedActive = observedActiveTurns.contains(turnKey) || !sessionRequests.isEmpty
             let existingReceipt = receipts[rowID]
-            guard (live && phase.isActive) || previous?.phase.isActive == true || existingReceipt != nil || (wasObservedActive && endReason != nil) else {
+            guard (live && phase.isActive) || !sessionRequests.isEmpty || previous?.phase.isActive == true || existingReceipt != nil || (wasObservedActive && endReason != nil) else {
                 continue
             }
 
@@ -805,7 +958,11 @@ final class AntigravityRuntime: ObservableObject {
             let mergedSteps = IslandStep.visibleSteps(from: transcriptSteps.isEmpty ? (overlay?.steps ?? []) : transcriptSteps)
 
             let actionText: String
-            if phase == .waitingApproval {
+            if let latestReq = sessionRequests.last {
+                actionText = latestReq.isQuestion
+                    ? (latestReq.questions.first?.text ?? "请在灵动岛回答问题")
+                    : "请求使用 \(latestReq.displayToolName)"
+            } else if phase == .waitingApproval {
                 actionText = "请在 \(session.surface.displayName) 中回答问题"
             } else if endReason == .cancelled {
                 actionText = "已取消"
@@ -817,15 +974,36 @@ final class AntigravityRuntime: ObservableObject {
                 actionText = phase.title
             }
 
+            var settledEntry: SettledTurn?
+            if let endReason {
+                if let existingSettled = settledTurns[turnKey] {
+                    settledEntry = existingSettled
+                } else {
+                    let fallbackEnded = turn.updatedAt > .distantPast ? min(now, turn.updatedAt) : now
+                    let resolvedEnded = terminalEndedAt ?? fallbackEnded
+                    let created = SettledTurn(
+                        phase: phase,
+                        endReason: endReason,
+                        endedAt: resolvedEnded,
+                        settledAt: now
+                    )
+                    settledTurns[turnKey] = created
+                    settledEntry = created
+                }
+            }
+
+            let resolvedStartedAt = turn.startedAt ?? overlay?.startedAt
             let updatedAt: Date
             if endReason == nil {
                 updatedAt = max(turn.updatedAt, overlay?.updatedAt ?? .distantPast)
-            } else if let prevReceipt = existingReceipt, prevReceipt.turnID == turnID, prevReceipt.endReason != nil {
-                updatedAt = prevReceipt.updatedAt
-            } else if let previous, previous.endReason != nil {
-                updatedAt = previous.updatedAt
+            } else if let settledEntry {
+                if let startedAt = resolvedStartedAt, settledEntry.endedAt < startedAt {
+                    updatedAt = startedAt
+                } else {
+                    updatedAt = settledEntry.endedAt
+                }
             } else {
-                updatedAt = settledTurns[turnKey]?.settledAt ?? now
+                updatedAt = now
             }
 
             var row = ActivitySessionSnapshot(
@@ -841,7 +1019,7 @@ final class AntigravityRuntime: ObservableObject {
                 endReason: endReason,
                 modelName: formattedModel.model.isEmpty ? rawModel : formattedModel.model,
                 reasoningEffort: formattedModel.effort,
-                startedAt: turn.startedAt ?? overlay?.startedAt,
+                startedAt: resolvedStartedAt,
                 sessionTotalTokens: session.totalTokens > 0 ? session.totalTokens : nil,
                 provider: "Antigravity",
                 waitReason: waitReason,
@@ -854,31 +1032,46 @@ final class AntigravityRuntime: ObservableObject {
                 observedActiveTurns.insert(turnKey)
                 receipts.removeValue(forKey: rowID)
                 next.append(row)
-            } else if wasObservedActive {
+            } else if wasObservedActive || existingReceipt != nil || previous?.phase.isActive == true {
+                let settledAt = settledEntry?.settledAt ?? now
+                let receiptAge = now.timeIntervalSince(settledAt)
                 let retainThreshold: TimeInterval = row.phase == .completed ? 15 : 6
-                row.isRetainedReceipt = now.timeIntervalSince(row.updatedAt) >= retainThreshold
-                receipts[rowID] = row
-                if now.timeIntervalSince(row.updatedAt) < 60 {
+                row.isRetainedReceipt = receiptAge >= retainThreshold
+                if receiptAge < 60 {
+                    receipts[rowID] = row
                     next.append(row)
                 } else {
                     receipts.removeValue(forKey: rowID)
+                    observedActiveTurns.remove(turnKey)
                 }
             }
         }
 
         // Handle hook-only sessions whose transcript file has not flushed its first step yet.
         for (id, overlay) in hookOverlays where !handledIDs.contains(id) {
-            guard let phase = overlay.phase, phase.isActive,
-                  now.timeIntervalSince(overlay.updatedAt) <= 30,
+            let sessionRequests = requests.filter { $0.conversationID == id && now < $0.deadline }
+            let latestReq = sessionRequests.last
+            let resolvedPhase = latestReq != nil ? .waitingApproval : overlay.phase
+            let maxIdleAge: TimeInterval = latestReq != nil ? 130 : 30
+            guard let phase = resolvedPhase, phase.isActive,
+                  now.timeIntervalSince(overlay.updatedAt) <= maxIdleAge,
                   overlay.hookProcessID.map(Self.isProcessAlive) ?? true else { continue }
             let rowID = "agy:" + id
             sessionSurfaces[rowID] = overlay.surface
-            let turnID = "hook-\(overlay.turnIndex)"
+            let turnID = "hook-\(max(1, overlay.turnIndex))"
             let turnKey = "\(rowID):\(turnID)"
             observedActiveTurns.insert(turnKey)
             receipts.removeValue(forKey: rowID)
             let formattedModel = AntigravityPricing.formatModel(overlay.model)
             let projectName = overlay.cwd.isEmpty ? overlay.surface.shortName : URL(fileURLWithPath: overlay.cwd).lastPathComponent
+            let resolvedActionText: String = {
+                if let latestReq {
+                    return latestReq.isQuestion
+                        ? (latestReq.questions.first?.text ?? "请在灵动岛回答问题")
+                        : "请求使用 \(latestReq.displayToolName)"
+                }
+                return overlay.actionText.isEmpty ? phase.title : overlay.actionText
+            }()
             let row = ActivitySessionSnapshot(
                 sessionID: rowID,
                 turnID: turnID,
@@ -886,8 +1079,8 @@ final class AntigravityRuntime: ObservableObject {
                 projectName: projectName,
                 title: overlay.title.isEmpty ? overlay.surface.displayName + " 任务" : overlay.title,
                 phase: phase,
-                actionText: overlay.actionText.isEmpty ? phase.title : overlay.actionText,
-                updatedAt: overlay.updatedAt,
+                actionText: resolvedActionText,
+                updatedAt: max(overlay.updatedAt, latestReq?.receivedAt ?? .distantPast),
                 tokenUsage: nil,
                 endReason: nil,
                 modelName: formattedModel.model.isEmpty ? overlay.model : formattedModel.model,
@@ -895,6 +1088,8 @@ final class AntigravityRuntime: ObservableObject {
                 startedAt: overlay.startedAt,
                 sessionTotalTokens: nil,
                 provider: "Antigravity",
+                waitReason: latestReq.map { $0.isQuestion ? .userInput : .approval },
+                replyRequestIDs: Set(sessionRequests.map(\.id)),
                 recentSteps: IslandStep.visibleSteps(from: overlay.steps)
             )
             next.append(row)
@@ -909,25 +1104,37 @@ final class AntigravityRuntime: ObservableObject {
             settled.updatedAt = now
             settled.suppressCompletion = true
             settled.recentSteps = old.recentSteps.map { $0.endingTask() }
-            settledTurns[turnKey] = (.ended, .ended, now)
+            settledTurns[turnKey] = SettledTurn(
+                phase: .ended,
+                endReason: .ended,
+                endedAt: now,
+                settledAt: now
+            )
             receipts[old.id] = settled
             next.append(settled)
         }
 
         // Keep retained receipts visible in expanded rail until 60s retention elapses, updating isRetainedReceipt.
         for (rowID, var receipt) in receipts where !next.contains(where: { $0.id == rowID }) {
-            if now.timeIntervalSince(receipt.updatedAt) < 60 {
+            let turnKey = "\(receipt.id):\(receipt.turnID ?? "")"
+            let settledAt = settledTurns[turnKey]?.settledAt ?? receipt.updatedAt
+            let receiptAge = now.timeIntervalSince(settledAt)
+            if receiptAge < 60 {
                 let retainThreshold: TimeInterval = receipt.phase == .completed ? 15 : 6
-                receipt.isRetainedReceipt = now.timeIntervalSince(receipt.updatedAt) >= retainThreshold
+                receipt.isRetainedReceipt = receiptAge >= retainThreshold
                 receipts[rowID] = receipt
                 next.append(receipt)
             } else {
                 receipts.removeValue(forKey: rowID)
+                observedActiveTurns.remove(turnKey)
             }
         }
 
         if settledTurns.count > 1024 {
             settledTurns = settledTurns.filter { now.timeIntervalSince($0.value.settledAt) < 3600 }
+        }
+        if observedActiveTurns.count > 1024 {
+            observedActiveTurns = Set(next.map { "\($0.id):\($0.turnID ?? "")" })
         }
 
         next.sort { lhs, rhs in
@@ -949,8 +1156,156 @@ final class AntigravityRuntime: ObservableObject {
         ), now: now)
     }
 
-    private func pruneExpiredReceipts(now: Date) {
-        receipts = receipts.filter { now.timeIntervalSince($0.value.updatedAt) < 60 }
+    @discardableResult
+    private func pruneExpiredReceipts(now: Date) -> Bool {
+        var pruned = false
+        for (rowID, receipt) in receipts {
+            let turnKey = "\(receipt.id):\(receipt.turnID ?? "")"
+            let settledAt = settledTurns[turnKey]?.settledAt ?? receipt.updatedAt
+            if now.timeIntervalSince(settledAt) >= 60 {
+                receipts.removeValue(forKey: rowID)
+                observedActiveTurns.remove(turnKey)
+                pruned = true
+            }
+        }
+        let expiredIDs = requests.filter { now >= $0.deadline }.map(\.id)
+        for id in expiredIDs {
+            expireRequest(id)
+        }
+        return pruned
+    }
+
+    // MARK: - Interactive Approvals & Questions
+
+    private func enqueuePermissionRequest(_ request: AntigravityPermissionRequest) {
+        requestTimeouts.removeValue(forKey: request.id)?.cancel()
+        requests.removeAll { $0.id == request.id }
+        requests.append(request)
+
+        let reqID = request.id
+        let item = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                self?.expireRequest(reqID)
+            }
+        }
+        requestTimeouts[reqID] = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + AntigravityPermissionRequest.decisionTimeoutSeconds, execute: item)
+    }
+
+    private func expireRequest(_ id: String) {
+        guard let req = requests.first(where: { $0.id == id }) else { return }
+        requestTimeouts.removeValue(forKey: id)?.cancel()
+        requests.removeAll { $0.id == id }
+        bridge.resolve(eventID: id, decision: ["decision": "allow"])
+        if var overlay = hookOverlays[req.conversationID], overlay.phase == .waitingApproval {
+            overlay.phase = .working
+            overlay.updatedAt = Date()
+            hookOverlays[req.conversationID] = overlay
+        }
+        reprojectCurrentRows()
+    }
+
+    private func handleDisconnectedRequest(_ id: String) {
+        guard let req = requests.first(where: { $0.id == id }) else { return }
+        requestTimeouts.removeValue(forKey: id)?.cancel()
+        requests.removeAll { $0.id == id }
+        if var overlay = hookOverlays[req.conversationID], overlay.phase == .waitingApproval {
+            overlay.phase = .working
+            overlay.updatedAt = Date()
+            hookOverlays[req.conversationID] = overlay
+        }
+        reprojectCurrentRows()
+    }
+
+    private func clearRequests(forConversationID conversationID: String, matchingToolCallID toolCallID: String?) {
+        let matching = requests.filter { req in
+            guard req.conversationID == conversationID else { return false }
+            if let toolCallID { return req.toolCallID == toolCallID }
+            return true
+        }
+        for req in matching {
+            requestTimeouts.removeValue(forKey: req.id)?.cancel()
+            requests.removeAll { $0.id == req.id }
+            bridge.resolve(eventID: req.id, decision: ["decision": "allow"])
+        }
+    }
+
+    private func passthroughAllPendingRequests() {
+        for item in requestTimeouts.values { item.cancel() }
+        requestTimeouts.removeAll()
+        let pending = requests
+        requests.removeAll()
+        for req in pending {
+            bridge.resolve(eventID: req.id, decision: ["decision": "allow"])
+        }
+    }
+
+    private func reprojectCurrentRows() {
+        let now = Date()
+        if let lastScan {
+            projectRows(lastScan, now: now)
+        } else {
+            projectHookOnlyRows(now: now)
+        }
+    }
+
+    @discardableResult
+    func respond(_ id: String, choice: AntigravityPermissionRequest.Choice, answers: [String: String] = [:]) -> Bool {
+        guard enabled, hooksEnabled, approvalsEnabled, !configuring,
+              let req = requests.first(where: { $0.id == id }) else {
+            return false
+        }
+        guard Date() < req.deadline else {
+            returnToClient(id)
+            return false
+        }
+        guard let decision = req.decision(choice, answers: answers) else {
+            return false
+        }
+        requestTimeouts.removeValue(forKey: id)?.cancel()
+        requests.removeAll { $0.id == id }
+        bridge.resolve(eventID: id, decision: decision)
+        if var overlay = hookOverlays[req.conversationID] {
+            overlay.phase = .working
+            overlay.actionText = req.isQuestion ? "已提交回答，等待继续执行" : "已发送审批决定"
+            overlay.updatedAt = Date()
+            hookOverlays[req.conversationID] = overlay
+        }
+        reprojectCurrentRows()
+        return true
+    }
+
+    func returnToClient(_ id: String) {
+        guard let req = requests.first(where: { $0.id == id }) else { return }
+        requestTimeouts.removeValue(forKey: id)?.cancel()
+        requests.removeAll { $0.id == id }
+        bridge.resolve(eventID: id, decision: ["decision": "allow"])
+        if var overlay = hookOverlays[req.conversationID] {
+            overlay.phase = .working
+            overlay.actionText = "已交回 \(req.surface.displayName)"
+            overlay.updatedAt = Date()
+            hookOverlays[req.conversationID] = overlay
+        }
+        reprojectCurrentRows()
+        openSurface(req.surface)
+    }
+
+    func showRequests() {
+        if requestWindow == nil {
+            let window = NSWindow(
+                contentRect: .init(x: 0, y: 0, width: 620, height: 520),
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "Antigravity 请求"
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: AntigravityRequestsView(runtime: self))
+            requestWindow = window
+        }
+        requestWindow?.center()
+        requestWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     // MARK: - Client Activation Fallback
@@ -960,7 +1315,11 @@ final class AntigravityRuntime: ObservableObject {
     }
 
     func fallbackTitle(for row: ActivitySessionSnapshot) -> String {
-        switch surface(for: row) {
+        fallbackTitle(for: surface(for: row))
+    }
+
+    func fallbackTitle(for surface: AntigravitySurface) -> String {
+        switch surface {
         case .app: return "在 Antigravity 中处理"
         case .ide: return "在 Antigravity IDE 中处理"
         case .cli: return "回终端处理"
@@ -968,7 +1327,10 @@ final class AntigravityRuntime: ObservableObject {
     }
 
     func openClient(for row: ActivitySessionSnapshot) {
-        let targetSurface = surface(for: row)
+        openSurface(surface(for: row))
+    }
+
+    func openSurface(_ targetSurface: AntigravitySurface) {
         let currentInstallation = AntigravityInstallationStatus.detect()
         switch targetSurface {
         case .app:

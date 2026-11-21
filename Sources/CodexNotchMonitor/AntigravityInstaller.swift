@@ -2,9 +2,9 @@ import CryptoKit
 import Darwin
 import Foundation
 
-/// Owns Codex Pulse's isolated `"codex-pulse"` entry in `~/.gemini/config/hooks.json`
+/// Owns Agent Pulse's isolated `"codex-pulse"` entry in `~/.gemini/config/hooks.json`
 /// and optional `statusLine` entry in `~/.gemini/antigravity-cli/settings.json`.
-/// Never reads credentials, never installs `PreToolUse`, backs up files before first edit,
+/// Never reads credentials, never silently auto-approves, backs up files before first edit,
 /// and restores original statusLine on disable/uninstall.
 struct AntigravityInstaller: Sendable {
     enum InstallationError: LocalizedError, Equatable {
@@ -29,17 +29,21 @@ struct AntigravityInstaller: Sendable {
 
     struct Configuration: Equatable, Sendable {
         var hooks: Bool
+        var interactiveApprovals: Bool = true
         var statusLine: Bool
     }
 
     struct State: Equatable, Sendable {
         var hooksInstalled = false
+        var interactiveApprovalsInstalled = false
         var statusLineInstalled = false
         var hooksFileExists = false
         var cliSettingsExist = false
     }
 
     static let hookKey = "codex-pulse"
+    static let decisionTimeoutSeconds = 120
+    static let preToolMatcher = "ask_question|run_command|write_file|write_to_file|edit_file|replace_file_content|multi_replace_file_content|read_file|view_file|read_url_content|mcp__.*"
     static let flatEvents = ["SessionStart", "PreInvocation", "PostInvocation", "Stop"]
     private static let helperName = "ClaudePulseHelper"
 
@@ -125,7 +129,9 @@ struct AntigravityInstaller: Sendable {
         let fm = FileManager.default
         let hooksRoot = (try? readJSONObject(at: hooksURL).root) ?? [:]
         let ownedHook = hooksRoot[Self.hookKey] as? [String: Any]
-        let hooksInstalled = isExpectedHookSpec(ownedHook)
+        let hasValidBase = isExpectedHookSpec(ownedHook, interactiveApprovals: false)
+        let hasValidInteractive = isExpectedHookSpec(ownedHook, interactiveApprovals: true)
+        let hooksInstalled = (hasValidBase || hasValidInteractive)
             && routeExists
             && fm.isExecutableFile(atPath: installedHelperURL.path)
 
@@ -139,6 +145,7 @@ struct AntigravityInstaller: Sendable {
 
         return State(
             hooksInstalled: hooksInstalled,
+            interactiveApprovalsInstalled: hooksInstalled && hasValidInteractive,
             statusLineInstalled: statusInstalled,
             hooksFileExists: fm.fileExists(atPath: hooksURL.path),
             cliSettingsExist: fm.fileExists(atPath: cliSettingsURL.path)
@@ -159,8 +166,13 @@ struct AntigravityInstaller: Sendable {
         try withLock {
             try installHelper()
             let cliResult = try configureCLISettings(statusLine: configuration.statusLine)
-            try configureHooks(enabled: configuration.hooks)
-            try writeRoute(forwardCommand: cliResult.forwardCommand, stackWithDefault: cliResult.stackWithDefault)
+            let enableInteractive = configuration.hooks && configuration.interactiveApprovals
+            try configureHooks(enabled: configuration.hooks, interactiveApprovals: enableInteractive)
+            try writeRoute(
+                interactiveApprovals: enableInteractive,
+                forwardCommand: cliResult.forwardCommand,
+                stackWithDefault: cliResult.stackWithDefault
+            )
             if !configuration.statusLine {
                 try? FileManager.default.removeItem(at: originalStatusLineURL)
             }
@@ -170,7 +182,7 @@ struct AntigravityInstaller: Sendable {
     func uninstall() throws {
         try withLock {
             _ = try configureCLISettings(statusLine: false)
-            try configureHooks(enabled: false)
+            try configureHooks(enabled: false, interactiveApprovals: false)
             for url in [routeURL, statusLineSnapshotURL, originalStatusLineURL, installedHelperURL]
                 where FileManager.default.fileExists(atPath: url.path) {
                 try? FileManager.default.removeItem(at: url)
@@ -180,13 +192,13 @@ struct AntigravityInstaller: Sendable {
 
     // MARK: - Hooks Configuration (`~/.gemini/config/hooks.json`)
 
-    private func configureHooks(enabled: Bool) throws {
+    private func configureHooks(enabled: Bool, interactiveApprovals: Bool) throws {
         for attempt in 0..<3 {
             let snapshot = try readJSONObject(at: hooksURL)
             if !enabled && snapshot.revision == nil { return }
             var root = snapshot.root
             if enabled {
-                root[Self.hookKey] = makeHookSpec()
+                root[Self.hookKey] = makeHookSpec(interactiveApprovals: interactiveApprovals)
             } else {
                 guard let current = root[Self.hookKey] else { return }
                 // Only remove the entry if it exists as our named key.
@@ -209,7 +221,7 @@ struct AntigravityInstaller: Sendable {
         throw InstallationError.settingsChanged
     }
 
-    private func makeHookSpec() -> [String: Any] {
+    private func makeHookSpec(interactiveApprovals: Bool) -> [String: Any] {
         let handler: [String: Any] = [
             "type": "command",
             "command": hookCommand,
@@ -218,6 +230,19 @@ struct AntigravityInstaller: Sendable {
         var spec: [String: Any] = ["enabled": true]
         for event in Self.flatEvents {
             spec[event] = [handler]
+        }
+        if interactiveApprovals {
+            let approvalHandler: [String: Any] = [
+                "type": "command",
+                "command": hookCommand,
+                "timeout": Self.decisionTimeoutSeconds + 5
+            ]
+            spec["PreToolUse"] = [
+                [
+                    "matcher": Self.preToolMatcher,
+                    "hooks": [approvalHandler]
+                ] as [String: Any]
+            ]
         }
         spec["PostToolUse"] = [
             [
@@ -228,9 +253,9 @@ struct AntigravityInstaller: Sendable {
         return spec
     }
 
-    private func isExpectedHookSpec(_ spec: [String: Any]?) -> Bool {
+    private func isExpectedHookSpec(_ spec: [String: Any]?, interactiveApprovals: Bool) -> Bool {
         guard let spec else { return false }
-        return NSDictionary(dictionary: spec).isEqual(to: makeHookSpec())
+        return NSDictionary(dictionary: spec).isEqual(to: makeHookSpec(interactiveApprovals: interactiveApprovals))
     }
 
     private func ownsHookObject(_ dict: [String: Any]) -> Bool {
@@ -240,11 +265,13 @@ struct AntigravityInstaller: Sendable {
                 return true
             }
         }
-        if let groups = dict["PostToolUse"] as? [[String: Any]] {
-            for group in groups {
-                if let hooks = group["hooks"] as? [[String: Any]],
-                   hooks.contains(where: { ownsHookCommand($0["command"] as? String ?? "") }) {
-                    return true
+        for groupedEvent in ["PreToolUse", "PostToolUse"] {
+            if let groups = dict[groupedEvent] as? [[String: Any]] {
+                for group in groups {
+                    if let hooks = group["hooks"] as? [[String: Any]],
+                       hooks.contains(where: { ownsHookCommand($0["command"] as? String ?? "") }) {
+                        return true
+                    }
                 }
             }
         }
@@ -315,15 +342,16 @@ struct AntigravityInstaller: Sendable {
 
     // MARK: - Route & Helper Files
 
-    private func writeRoute(forwardCommand: String?, stackWithDefault: Bool) throws {
+    private func writeRoute(interactiveApprovals: Bool, forwardCommand: String?, stackWithDefault: Bool) throws {
         var route: [String: Any] = [
             "version": 1,
             "socketPath": socketURL.path,
             "authenticationToken": authenticationToken,
-            "interactiveApprovals": false,
-            "decisionTimeoutSeconds": 5,
+            "interactiveApprovals": interactiveApprovals,
+            "decisionTimeoutSeconds": interactiveApprovals ? Self.decisionTimeoutSeconds : 5,
             "statusLineSnapshotPath": statusLineSnapshotURL.path,
-            "statusLineStackWithDefault": stackWithDefault
+            "statusLineStackWithDefault": stackWithDefault,
+            "geminiDirectoryPath": geminiDirectory.path
         ]
         if let forwardCommand, !forwardCommand.isEmpty {
             route["statusLineForwardCommand"] = forwardCommand
