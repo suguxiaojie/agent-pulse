@@ -9,3 +9,4 @@ build/
 __pycache__/
 *.py[cod]
 NEXT_CHAT_HANDOFF.md
+ROADMAP.md
