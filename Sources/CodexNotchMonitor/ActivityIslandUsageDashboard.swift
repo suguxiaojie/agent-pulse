@@ -50,6 +50,7 @@ struct ActivityIslandUsageDashboard: View {
         .animation(reduceMotion ? nil : FloatingSurfaceTheme.selectionMotion, value: mode)
         .accessibilityElement(children: .contain).accessibilityLabel(showsReset ? "额度重置面板" : "用量统计面板")
         .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { now = $0 }
+        .onAppear { now = Date() }
         .onChange(of: model.usageProvider) { _ in
             now = Date(); selectedCost = nil; selectedActivity = nil; hoveredCost = nil; hoveredActivity = nil
             flightSerial &+= 1; flightActive = false; showsReset = false; model.resetDetailVisible = false
@@ -94,14 +95,15 @@ struct ActivityIslandUsageDashboard: View {
                             if case .codex(_, _, let count) = p.source { return count }
                             return nil
                         }()
+                        let displayNow = model.usageProvider == .grok ? GrokDisplayClock.now(sampled: now) : now
                         HStack(spacing: 10) {
-                            IslandUsageQuotaRow(quotas: p.quotas, now: now, statusHint: statusHint, resetCount: resetCount)
+                            IslandUsageQuotaRow(quotas: p.quotas, now: displayNow, statusHint: statusHint, resetCount: resetCount)
                             IslandUsageSourceCard(source: p.source, playbackVisible: model.playbackVisible,
                                 flightActive: flightActive, onReset: { if p.supportsReset { navigateReset(true) } })
                                 .frame(width: min(214, max(172, (width - 56) * 0.355)))
                         }.fixedSize(horizontal: false, vertical: true)
                         IslandUsageMetricStrip(metrics: p.metrics)
-                        IslandUsageTrendCard(presentation: p, width: width, now: now, mode: $mode,
+                        IslandUsageTrendCard(presentation: p, width: width, now: displayNow, mode: $mode,
                             selectedCost: $selectedCost, selectedActivity: $selectedActivity,
                             hoveredCost: $hoveredCost, hoveredActivity: $hoveredActivity)
                     }

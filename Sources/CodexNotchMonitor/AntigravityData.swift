@@ -50,7 +50,7 @@ struct AntigravityInstallationStatus: Equatable, Sendable {
         if appURL != nil { found.append("2.0 桌面端") }
         if ideURL != nil { found.append("IDE") }
         if cliURL != nil { found.append("agy CLI") }
-        return found.isEmpty ? "未检测到客户端" : "已就绪：" + found.joined(separator: " · ")
+        return found.isEmpty ? "未检测到客户端" : found.joined(separator: " / ")
     }
 
     static func detect(

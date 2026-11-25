@@ -121,6 +121,10 @@ struct AntigravityInstaller: Sendable {
         [quote(installedHelperURL.path), "--antigravity-hook", "--configuration", quote(routeURL.path)].joined(separator: " ")
     }
 
+    func hookCommand(for event: String) -> String {
+        [quote(installedHelperURL.path), "--antigravity-hook", "--event", event, "--configuration", quote(routeURL.path)].joined(separator: " ")
+    }
+
     var statusLineCommand: String {
         [quote(installedHelperURL.path), "--antigravity-statusline", "--configuration", quote(routeURL.path)].joined(separator: " ")
     }
@@ -222,19 +226,20 @@ struct AntigravityInstaller: Sendable {
     }
 
     private func makeHookSpec(interactiveApprovals: Bool) -> [String: Any] {
-        let handler: [String: Any] = [
-            "type": "command",
-            "command": hookCommand,
-            "timeout": 5
-        ]
         var spec: [String: Any] = ["enabled": true]
         for event in Self.flatEvents {
-            spec[event] = [handler]
+            spec[event] = [
+                [
+                    "type": "command",
+                    "command": hookCommand(for: event),
+                    "timeout": 5
+                ] as [String: Any]
+            ]
         }
         if interactiveApprovals {
             let approvalHandler: [String: Any] = [
                 "type": "command",
-                "command": hookCommand,
+                "command": hookCommand(for: "PreToolUse"),
                 "timeout": Self.decisionTimeoutSeconds + 5
             ]
             spec["PreToolUse"] = [
@@ -247,7 +252,13 @@ struct AntigravityInstaller: Sendable {
         spec["PostToolUse"] = [
             [
                 "matcher": "*",
-                "hooks": [handler]
+                "hooks": [
+                    [
+                        "type": "command",
+                        "command": hookCommand(for: "PostToolUse"),
+                        "timeout": 5
+                    ] as [String: Any]
+                ]
             ] as [String: Any]
         ]
         return spec

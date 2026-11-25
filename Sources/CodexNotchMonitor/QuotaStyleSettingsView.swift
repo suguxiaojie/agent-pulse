@@ -186,7 +186,7 @@ struct QuotaStyleSettingsView: View {
         PanelSettingsGroup(title: "桌宠", symbol: "pawprint") {
             toggle("显示桌宠", symbol: "figure.climbing", detail: "Codex 显示终端仔、Claude 显示 Clawd、Grok 显示 Grok Bot、Antigravity 显示浮游星核，随任务状态联动。", value: $clawdEnabled)
             SettingsRowDivider()
-            SettingsRow(symbol: "arrow.up.left.and.arrow.down.right", title: "桌宠大小", detail: "按紧凑灵动岛高度限制大小，保持完整可见。") {
+            SettingsRow(symbol: "arrow.up.left.and.arrow.down.right", title: "桌宠大小", detail: "调整灵动岛中桌宠的显示尺寸。") {
                 PanelSettingsSegments(
                     options: IslandClawdSize.allCases.map(\.title),
                     selection: Binding(
@@ -233,7 +233,7 @@ struct QuotaStyleSettingsView: View {
     }
     private var feedbackGroup: some View {
         PanelSettingsGroup(title: "完成与提醒", symbol: "bell.badge") {
-            SettingsRow(symbol: "party.popper", title: "礼花", detail: "任务完成时播放；减弱动态效果开启时不播放。") {
+            SettingsRow(symbol: "party.popper", title: "礼花", detail: "任务完成时播放礼花效果。") {
                 PanelSettingsSegments(
                     options: ActivityIslandConfettiIntensity.allCases.map(\.title),
                     selection: Binding(
@@ -266,7 +266,7 @@ struct QuotaStyleSettingsView: View {
     }
     private var automaticGroup: some View {
         PanelSettingsGroup(title: "展开与弹出", symbol: "arrow.up.left.and.arrow.down.right") {
-            SettingsRow(symbol: "cursorarrow.rays", title: "展开方式", detail: "悬停：鼠标移上去就展开；点击：点一下才展开，避免误触。") {
+            SettingsRow(symbol: "cursorarrow.rays", title: "展开方式", detail: "选择鼠标悬停展开，或点击后才展开。") {
                 PanelSettingsSegments(
                     options: ActivityIslandExpandTrigger.allCases.map(\.title),
                     selection: Binding(

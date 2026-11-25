@@ -74,38 +74,47 @@ struct IslandFloatingUsageCapsule: View {
             Color.clear
             if model.showsFloatingUsage && model.presentation != .hidden {
                 TimelineView(.periodic(from: .now, by: 60)) { context in
+                    let capsuleProvider = geometry.value.compact ? model.activeQuotaProvider : model.expandedQuotaProvider
                     Group {
-                    if model.usageProvider == .grok {
+                    if capsuleProvider == .grok {
+                        let displayNow = GrokDisplayClock.now(sampled: context.date)
                         let quota = model.grokQuota
-                        let available = quota?.isAvailable(at: context.date) == true
-                        let stale = model.grokQuotaFailed || quota?.isStale(at: context.date) == true
+                        let available = quota?.isAvailable(at: displayNow) == true
+                        let stale = model.grokQuotaFailed || quota?.isStale(at: displayNow) == true
                         HStack(spacing: 6) {
                             Image(systemName: "sparkle").accessibilityHidden(true)
                             Text("Grok")
                             Text(available ? "\(quota!.remainingPercent)%" : "—").monospacedDigit()
-                            Text(available ? IslandFloatingQuotaPeriods.countdown(until: quota?.resetsAt, now: context.date) + "重置" : "等待额度")
+                            Text(available ? IslandFloatingQuotaPeriods.countdown(until: quota?.resetsAt, now: displayNow) + "重置" : "等待额度")
                                 .foregroundStyle(FloatingSurfaceTheme.secondary())
                             if stale && available { Text("上次观测").foregroundStyle(FloatingSurfaceTheme.secondary()) }
                         }.font(FloatingSurfaceTypography.control).foregroundStyle(FloatingSurfaceTheme.primary())
                             .opacity(stale ? 0.55 : 1).padding(.horizontal, 12).frame(height: 32).fixedSize()
                             .modifier(IslandNativeBackdropMaterial(shape: Capsule()))
-                    } else if model.usageProvider == .antigravity {
+                    } else if capsuleProvider == .antigravity {
                         let staleLimit = AntigravityQuotaSnapshot.uiStaleThreshold
                         let active = model.antigravityStatusLineEnabled
                             ? (model.antigravityQuota?.activeWindows(at: context.date, staleCutoff: staleLimit) ?? [])
                             : []
                         let primary = active.min { $0.remainingPercent < $1.remainingPercent }
+                        let rolledOver = primary == nil && model.antigravityStatusLineEnabled
+                            && model.antigravityQuota?.rolledOverGeminiFiveHour(at: context.date, staleCutoff: staleLimit) != nil
                         let stale = model.antigravityQuota?.isStale(at: context.date, threshold: staleLimit) == true
                         HStack(spacing: 6) {
                             Image(systemName: "sparkles").accessibilityHidden(true)
                             Text("Antigravity")
-                            Text(primary.map { "\($0.remainingPercent)%" } ?? "—").monospacedDigit()
-                            Text(primary != nil ? IslandFloatingQuotaPeriods.countdown(until: primary?.resetsAt, now: context.date) + "重置" : "等待额度")
+                            Text(primary.map { "\($0.remainingPercent)%" } ?? (rolledOver ? "100%" : "—")).monospacedDigit()
+                            Text(primary != nil ? IslandFloatingQuotaPeriods.countdown(until: primary?.resetsAt, now: context.date) + "重置" : (rolledOver ? "已重置" : "等待额度"))
                                 .foregroundStyle(FloatingSurfaceTheme.secondary())
                             if stale && primary != nil { Text("上次观测").foregroundStyle(FloatingSurfaceTheme.secondary()) }
                         }.font(FloatingSurfaceTypography.control).foregroundStyle(FloatingSurfaceTheme.primary())
                             .opacity(stale ? 0.55 : 1).padding(.horizontal, 12).frame(height: 32).fixedSize()
                             .modifier(IslandNativeBackdropMaterial(shape: Capsule()))
+                    } else if capsuleProvider == .claude {
+                        let claude = IslandClaudeUsage(usage: model.claudeUsage, limits: model.claudeLimits,
+                            statusLineEnabled: model.claudeStatusLineEnabled, now: context.date)
+                        let windows = [claude.fiveHour, claude.weekly].compactMap { $0 }
+                        IslandUsageCapsuleContent(windows: windows, current: !windows.isEmpty, now: context.date)
                     } else {
                     IslandUsageCapsuleContent(windows: IslandFloatingQuotaPeriods.windows(model.quotaState),
                         current: IslandFloatingQuotaPeriods.current(model.quotaState), now: context.date)

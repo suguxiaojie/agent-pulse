@@ -47,6 +47,8 @@ final class AntigravityRuntime: ObservableObject {
         var endReason: SessionEndReason?
         var actionText: String = ""
         var startedAt: Date?
+        /// Timestamp when the overlay's current turn began (set only on new turn start, preserved across `Stop`).
+        var turnOriginAt: Date?
         var updatedAt = Date.distantPast
         var hookProcessID: pid_t?
         var steps: [IslandStep] = []
@@ -60,6 +62,8 @@ final class AntigravityRuntime: ObservableObject {
         var endedAt: Date
         /// Wall-clock timestamp when Pulse first entered receipt retention (drives 15s/60s expiry).
         var settledAt: Date
+        /// True when settled speculatively from SQLite `summaryStatus == .idle` while transcript was still active.
+        var speculativeSummaryIdle: Bool = false
     }
 
     private var hookOverlays: [String: HookOverlay] = [:]
@@ -71,6 +75,8 @@ final class AntigravityRuntime: ObservableObject {
     private var lastStatusLineFileMTime: TimeInterval = 0
     private var lastOneNativeStatusLineMTime: TimeInterval = 0
     private var pendingManualRefresh = false
+    private var pendingActivityRefresh = false
+    private var summaryGraceRescan: DispatchWorkItem?
 
     init(
         defaults: UserDefaults = .standard,
@@ -121,6 +127,10 @@ final class AntigravityRuntime: ObservableObject {
         scanTask?.cancel()
         scanTask = nil
         scanning = false
+        pendingManualRefresh = false
+        pendingActivityRefresh = false
+        summaryGraceRescan?.cancel()
+        summaryGraceRescan = nil
         configuring = false
         desiredConfiguration = nil
         passthroughAllPendingRequests()
@@ -158,6 +168,9 @@ final class AntigravityRuntime: ObservableObject {
             loadPersistedStatusLineSnapshot(force: true)
         }
         pendingManualRefresh = true
+        if enabled && !configuring {
+            scanning = true
+        }
         refreshActivity(manual: true)
     }
 
@@ -173,6 +186,10 @@ final class AntigravityRuntime: ObservableObject {
         scanTask?.cancel()
         scanTask = nil
         scanning = false
+        pendingManualRefresh = false
+        pendingActivityRefresh = false
+        summaryGraceRescan?.cancel()
+        summaryGraceRescan = nil
 
         if !target || !hooks || !resolvedApprovals {
             passthroughAllPendingRequests()
@@ -263,13 +280,10 @@ final class AntigravityRuntime: ObservableObject {
 
     private func connectionStatusSummary() -> String {
         guard enabled else { return "未启用" }
-        var parts: [String] = []
-        if hooksEnabled {
-            parts.append(approvalsEnabled ? "三端 Hook 与岛内审批已就绪" : "三端 Hook 已就绪")
+        if hooksEnabled || statusLineEnabled {
+            return "已连接"
         }
-        if statusLineEnabled { parts.append("CLI 状态栏已就绪") }
-        if parts.isEmpty { parts.append("仅本地日志只读扫描") }
-        return parts.joined(separator: " · ")
+        return "仅本地统计"
     }
 
     private func startBridge() throws {
@@ -332,11 +346,23 @@ final class AntigravityRuntime: ObservableObject {
         var newestOneNative: AntigravityQuotaSnapshot?
         let now = Date()
         var overlayChanged = false
+        var needsActivityRefresh = false
+        var deferProjectionForIdle = false
+        var seenLiveOneNativeIDs: Set<String> = []
         for item in oneNativeFiles.sorted(by: { $0.mtime > $1.mtime }) {
             guard let data = Self.readPrivateRegularFile(item.url, uid: uid, requirePrivateMode: true, maxBytes: 65_536) else { continue }
             if let rawObj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
-                if ingestOneNativeLiveOverlay(rawObj, now: now) {
+                let outcome = ingestOneNativeLiveOverlay(rawObj, now: now, seenLiveConversationIDs: &seenLiveOneNativeIDs)
+                if outcome.overlayChanged {
                     overlayChanged = true
+                }
+                if outcome.needsRefresh {
+                    needsActivityRefresh = true
+                }
+                if outcome.deferStaleProjection {
+                    deferProjectionForIdle = true
+                } else if outcome.overlayChanged {
+                    deferProjectionForIdle = false
                 }
             }
             guard let decoded = AntigravityQuotaSnapshot.decode(snapshot: data) else { continue }
@@ -367,7 +393,10 @@ final class AntigravityRuntime: ObservableObject {
             quota = candidate.mergingMetadata(from: quota)
         }
 
-        if overlayChanged {
+        if needsActivityRefresh {
+            refreshActivity()
+        }
+        if overlayChanged && !deferProjectionForIdle {
             if let lastScan {
                 projectRows(lastScan, now: now)
             } else {
@@ -376,31 +405,27 @@ final class AntigravityRuntime: ObservableObject {
         }
     }
 
-    private func clearSettledTurns(forConversationID id: String, olderThan cutoff: Date? = nil) {
-        let prefix = "agy:\(id):"
-        for (key, entry) in settledTurns where key.hasPrefix(prefix) {
-            if let cutoff {
-                if entry.settledAt < cutoff {
-                    settledTurns.removeValue(forKey: key)
-                }
-            } else {
-                settledTurns.removeValue(forKey: key)
-            }
-        }
-    }
-
-    private func ingestOneNativeLiveOverlay(_ object: [String: Any], now: Date) -> Bool {
+    private func ingestOneNativeLiveOverlay(
+        _ object: [String: Any],
+        now: Date,
+        seenLiveConversationIDs: inout Set<String>
+    ) -> (overlayChanged: Bool, needsRefresh: Bool, deferStaleProjection: Bool) {
         guard let facts = object["facts"] as? [String: Any],
               let id = (facts["conversation_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !id.isEmpty, id.utf8.count <= 256 else { return false }
+              !id.isEmpty, id.utf8.count <= 256 else { return (false, false, false) }
         let pidNum = (object["pid"] as? Int) ?? 0
-        guard pidNum > 1 else { return false }
+        guard pidNum > 1 else { return (false, false, false) }
         let pid = pid_t(pidNum)
         let alive = Self.isProcessAlive(pid)
+        if alive {
+            seenLiveConversationIDs.insert(id)
+        } else if seenLiveConversationIDs.contains(id) {
+            return (false, false, false)
+        }
         let observedAt = (object["observed_at"] as? String).flatMap(FastTimestamp.parse)
             ?? Date(timeIntervalSince1970: 0)
         guard observedAt > Date(timeIntervalSince1970: 1_000_000_000),
-              observedAt <= now.addingTimeInterval(60) else { return false }
+              observedAt <= now.addingTimeInterval(60) else { return (false, false, false) }
 
         let agentState = (facts["agent_state"] as? String)?.lowercased() ?? ""
         var overlay = hookOverlays[id] ?? HookOverlay(surface: .cli)
@@ -408,37 +433,59 @@ final class AntigravityRuntime: ObservableObject {
         let beforeModel = overlay.model
         let beforeCwd = overlay.cwd
 
-        if let cwd = facts["cwd"] as? String, !cwd.isEmpty {
-            overlay.cwd = cwd
-        }
-        if let model = (facts["model_id"] as? String) ?? (facts["model"] as? String), !model.isEmpty {
-            overlay.model = model
-        }
-        if let title = facts["conversation_title"] as? String, !title.isEmpty, overlay.title.isEmpty {
-            overlay.title = title
+        if alive || observedAt >= overlay.updatedAt {
+            if let cwd = facts["cwd"] as? String, !cwd.isEmpty {
+                overlay.cwd = cwd
+            }
+            if let model = (facts["model_id"] as? String) ?? (facts["model"] as? String), !model.isEmpty {
+                overlay.model = model
+            }
+            if let title = facts["conversation_title"] as? String, !title.isEmpty, overlay.title.isEmpty {
+                overlay.title = title
+            }
         }
 
         if agentState == "working", alive, now.timeIntervalSince(observedAt) <= 30 {
-            clearSettledTurns(forConversationID: id, olderThan: observedAt.addingTimeInterval(-0.5))
+            let minAcceptedTimestamp = overlay.endReason != nil
+                ? overlay.updatedAt.addingTimeInterval(2.0)
+                : overlay.updatedAt
+            guard observedAt > minAcceptedTimestamp else {
+                let metaChanged = beforeModel != overlay.model || beforeCwd != overlay.cwd
+                if metaChanged { hookOverlays[id] = overlay }
+                return (metaChanged, false, false)
+            }
             overlay.hookProcessID = pid
             overlay.endReason = nil
+            var startedNewTurn = false
             if overlay.phase == nil || overlay.phase?.isActive != true {
                 overlay.turnIndex += 1
-                overlay.startedAt = overlay.startedAt ?? observedAt
+                overlay.turnOriginAt = observedAt
+                overlay.startedAt = observedAt
+                overlay.steps.removeAll()
                 overlay.phase = .working
+                startedNewTurn = true
+            } else if overlay.turnOriginAt == nil {
+                overlay.turnOriginAt = overlay.startedAt ?? observedAt
             }
             overlay.updatedAt = max(overlay.updatedAt, observedAt)
             hookOverlays[id] = overlay
-            return beforePhase != overlay.phase || beforeModel != overlay.model || beforeCwd != overlay.cwd
+            return (beforePhase != overlay.phase || beforeModel != overlay.model || beforeCwd != overlay.cwd, startedNewTurn, false)
         } else if agentState == "idle" || !alive {
+            if !alive, let existingPID = overlay.hookProcessID, existingPID != pid, Self.isProcessAlive(existingPID) {
+                return (false, false, false)
+            }
             if overlay.phase?.isActive == true, observedAt >= overlay.updatedAt.addingTimeInterval(-1) {
                 overlay.phase = nil
                 overlay.updatedAt = max(overlay.updatedAt, observedAt)
                 hookOverlays[id] = overlay
-                return true
+                let lastScanStillActive = lastScan?.sessions.first(where: { $0.id == id })?.turn.isActive == true
+                return (true, true, lastScanStillActive)
+            }
+            if alive && agentState == "idle" && rows.contains(where: { $0.id == "agy:" + id && $0.phase.isActive }) {
+                return (false, true, false)
             }
         }
-        return false
+        return (false, false, false)
     }
 
     private func discoverOneNativeStatusLineFiles(uid: uid_t) -> [(url: URL, mtime: TimeInterval)] {
@@ -524,21 +571,62 @@ final class AntigravityRuntime: ObservableObject {
                    !modelID.isEmpty {
                     overlay.model = modelID
                 }
+                let observedAt: Date = {
+                    if let captured = (object["capturedAt"] as? NSNumber)?.doubleValue,
+                       captured.isFinite, captured > 1_000_000_000 {
+                        let date = Date(timeIntervalSince1970: captured)
+                        if date <= receivedAt.addingTimeInterval(5) {
+                            return min(date, receivedAt)
+                        }
+                    }
+                    return receivedAt
+                }()
+                var shouldRefresh = false
+                var shouldProject = true
                 if let agentState = (object["agent_state"] as? String ?? object["agentState"] as? String)?.lowercased() {
                     if agentState == "working" {
-                        clearSettledTurns(forConversationID: sessionID, olderThan: receivedAt.addingTimeInterval(-0.5))
-                        overlay.endReason = nil
-                        if overlay.phase != .waitingApproval {
-                            overlay.phase = .working
+                        let minAccepted = overlay.endReason != nil
+                            ? overlay.updatedAt.addingTimeInterval(2.0)
+                            : overlay.updatedAt.addingTimeInterval(-1.0)
+                        if observedAt > minAccepted {
+                            if overlay.phase == nil || overlay.phase?.isActive != true {
+                                overlay.turnIndex += 1
+                                overlay.turnOriginAt = observedAt
+                                overlay.startedAt = observedAt
+                                overlay.steps.removeAll()
+                                overlay.endReason = nil
+                                overlay.phase = .working
+                                shouldRefresh = true
+                            } else {
+                                if overlay.turnOriginAt == nil {
+                                    overlay.turnOriginAt = overlay.startedAt ?? observedAt
+                                }
+                                if overlay.phase != .waitingApproval {
+                                    overlay.phase = .working
+                                }
+                            }
+                            overlay.updatedAt = max(overlay.updatedAt, observedAt)
                         }
-                        overlay.updatedAt = receivedAt
-                    } else if agentState == "idle", overlay.phase?.isActive == true {
-                        overlay.phase = nil
-                        overlay.updatedAt = receivedAt
+                    } else if agentState == "idle" {
+                        let rowActive = rows.contains { $0.id == "agy:" + sessionID && $0.phase.isActive }
+                        if overlay.phase?.isActive == true, observedAt >= overlay.updatedAt.addingTimeInterval(-1.0) {
+                            overlay.phase = nil
+                            overlay.updatedAt = max(overlay.updatedAt, observedAt)
+                            shouldRefresh = true
+                            let lastScanStillActive = lastScan?.sessions.first(where: { $0.id == sessionID })?.turn.isActive == true
+                            shouldProject = !lastScanStillActive
+                        } else if rowActive {
+                            shouldRefresh = true
+                        }
                     }
                 }
                 hookOverlays[sessionID] = overlay
-                if let lastScan { projectRows(lastScan, now: receivedAt) }
+                if shouldRefresh {
+                    refreshActivity()
+                }
+                if shouldProject, let lastScan {
+                    projectRows(lastScan, now: receivedAt)
+                }
             }
             return
         }
@@ -602,23 +690,37 @@ final class AntigravityRuntime: ObservableObject {
             return
 
         case "PreInvocation":
-            clearSettledTurns(forConversationID: id)
             let invNum = (object["invocationNum"] as? Int) ?? 0
-            if invNum <= 1 || overlay.phase == nil || overlay.endReason != nil {
+            let isNewTurn = invNum <= 1 || overlay.phase == nil || overlay.endReason != nil
+            if isNewTurn {
                 overlay.turnIndex += 1
+                overlay.turnOriginAt = receivedAt
                 overlay.startedAt = receivedAt
                 overlay.steps.removeAll()
                 overlay.endReason = nil
+                overlay.actionText = overlay.title.isEmpty ? "思考中" : overlay.title
+            } else if overlay.turnOriginAt == nil {
+                overlay.turnOriginAt = overlay.startedAt ?? receivedAt
             }
             overlay.phase = .working
-            if overlay.actionText.isEmpty || overlay.endReason != nil {
+            if overlay.actionText.isEmpty {
                 overlay.actionText = overlay.title.isEmpty ? "思考中" : overlay.title
             }
             hookOverlays[id] = overlay
+            if isNewTurn {
+                refreshActivity()
+            }
 
         case "PreToolUse":
-            clearSettledTurns(forConversationID: id)
-            overlay.endReason = nil
+            if overlay.turnIndex == 0 || overlay.endReason != nil {
+                overlay.turnIndex += 1
+                overlay.turnOriginAt = receivedAt
+                overlay.startedAt = receivedAt
+                overlay.steps.removeAll()
+                overlay.endReason = nil
+            } else if overlay.turnOriginAt == nil {
+                overlay.turnOriginAt = overlay.startedAt ?? receivedAt
+            }
             if let tool = object["toolCall"] as? [String: Any],
                let name = tool["name"] as? String {
                 let stepID = (tool["id"] as? String) ?? "hook-\(overlay.steps.count)"
@@ -639,6 +741,7 @@ final class AntigravityRuntime: ObservableObject {
                 if approvalsEnabled, let req = AntigravityPermissionRequest.decode(message, receivedAt: receivedAt) {
                     if overlay.turnIndex == 0 {
                         overlay.turnIndex = 1
+                        overlay.turnOriginAt = overlay.turnOriginAt ?? receivedAt
                         overlay.startedAt = overlay.startedAt ?? receivedAt
                     }
                     overlay.phase = .waitingApproval
@@ -656,9 +759,9 @@ final class AntigravityRuntime: ObservableObject {
             hookOverlays[id] = overlay
 
         case "PostToolUse":
-            clearSettledTurns(forConversationID: id)
-            overlay.endReason = nil
-            overlay.phase = .working
+            if overlay.endReason == nil {
+                overlay.phase = .working
+            }
             if let tool = object["toolCall"] as? [String: Any],
                let name = tool["name"] as? String {
                 if let callID = tool["id"] as? String, !callID.isEmpty {
@@ -684,10 +787,10 @@ final class AntigravityRuntime: ObservableObject {
 
         case "PostInvocation":
             if overlay.endReason == nil {
-                clearSettledTurns(forConversationID: id)
                 overlay.phase = .working
             }
             hookOverlays[id] = overlay
+            refreshActivity()
 
         case "Stop":
             clearRequests(forConversationID: id, matchingToolCallID: nil)
@@ -706,16 +809,24 @@ final class AntigravityRuntime: ObservableObject {
                 terminalPhase = .completed
                 terminalEnd = .completed
             }
+            if overlay.turnOriginAt == nil {
+                overlay.turnOriginAt = overlay.startedAt
+            }
             overlay.phase = terminalPhase
             overlay.endReason = terminalEnd
             hookOverlays[id] = overlay
+            let settled = SettledTurn(
+                phase: terminalPhase,
+                endReason: terminalEnd,
+                endedAt: receivedAt,
+                settledAt: receivedAt,
+                speculativeSummaryIdle: false
+            )
             if let existingTurn = rows.first(where: { $0.id == "agy:" + id })?.turnID {
-                settledTurns["agy:\(id):\(existingTurn)"] = SettledTurn(
-                    phase: terminalPhase,
-                    endReason: terminalEnd,
-                    endedAt: receivedAt,
-                    settledAt: receivedAt
-                )
+                settledTurns["agy:\(id):\(existingTurn)"] = settled
+            }
+            if let scanTurn = lastScan?.sessions.first(where: { $0.id == id && $0.turn.isActive })?.turn.turnID {
+                settledTurns["agy:\(id):\(scanTurn)"] = settled
             }
             refreshActivity()
 
@@ -743,22 +854,52 @@ final class AntigravityRuntime: ObservableObject {
     }
 
     func refreshActivity(manual: Bool = false) {
-        guard enabled, !configuring, scanTask == nil else { return }
+        guard enabled, !configuring else { return }
+        if scanTask != nil {
+            pendingActivityRefresh = true
+            if manual {
+                pendingManualRefresh = true
+                scanning = true
+            }
+            return
+        }
         let forceManual = manual || pendingManualRefresh
         pendingManualRefresh = false
-        scanning = true
+        pendingActivityRefresh = false
+        if forceManual {
+            scanning = true
+        }
         let version = generation
         let scanner = scanner
         scanTask = Task(priority: forceManual ? .userInitiated : .utility) { [weak self] in
             let scan = await scanner.scan()
             guard let self, !Task.isCancelled, self.enabled, self.generation == version else { return }
-            self.scanning = false
             self.scanTask = nil
+            let nextManual = self.pendingManualRefresh
+            let nextActivity = self.pendingActivityRefresh
+            if !nextManual {
+                self.scanning = false
+            }
             self.consume(scan, forcePublishUsage: forceManual)
-            if self.pendingManualRefresh {
-                self.refreshActivity(manual: true)
+            if nextManual || nextActivity {
+                self.pendingManualRefresh = false
+                self.pendingActivityRefresh = false
+                self.refreshActivity(manual: nextManual)
             }
         }
+    }
+
+    private func scheduleSummaryGraceRescan() {
+        guard enabled, !configuring, summaryGraceRescan == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.summaryGraceRescan = nil
+                self.refreshActivity()
+            }
+        }
+        summaryGraceRescan = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
     }
 
     func consume(_ scan: AntigravityScanResult, now: Date = Date(), forcePublishUsage: Bool = false) {
@@ -787,20 +928,213 @@ final class AntigravityRuntime: ObservableObject {
             let live = session.isLockedLive || hookAlive
 
             let turn = session.turn
-            let resolvedTurnID = turn.turnID ?? overlay.map { "hook-\($0.turnIndex)" }
+            let summaryIdleModifiedAt: Date? = {
+                if case .idle(let modifiedAt) = session.summaryStatus { return modifiedAt }
+                return nil
+            }()
+            let turnEffectiveUpdatedAt = max(turn.updatedAt, turn.transcriptModifiedAt ?? .distantPast)
+            let turnEffectiveEnd = turn.isActive
+                ? turnEffectiveUpdatedAt
+                : max(turnEffectiveUpdatedAt, summaryIdleModifiedAt ?? .distantPast)
+            let sessionRequests = requests.filter { $0.conversationID == session.id && now < $0.deadline }
+
+            let overlayRecentForNewTurn = overlay.map { ov in
+                let maxAge: TimeInterval = (ov.endReason != nil) ? 60 : 30
+                return now.timeIntervalSince(ov.updatedAt) <= maxAge
+                    && (ov.hookProcessID.map(Self.isProcessAlive) ?? true)
+            } ?? false
+            let overlayAheadOfTranscript: Bool = {
+                guard !turn.isActive else { return false }
+                if !sessionRequests.isEmpty { return true }
+                guard let ov = overlay, ov.turnIndex > 0, let origin = ov.turnOriginAt else { return false }
+                guard overlayRecentForNewTurn else { return false }
+                return origin > turnEffectiveEnd.addingTimeInterval(0.5)
+            }()
+
+            if overlayAheadOfTranscript {
+                let turnID = "hook-\(max(1, overlay?.turnIndex ?? 1))"
+                let turnKey = "\(rowID):\(turnID)"
+                if let staleReceipt = receipts[rowID], staleReceipt.turnID != turnID {
+                    receipts.removeValue(forKey: rowID)
+                }
+                let sessionTurnPrefix = "\(rowID):"
+                for key in Array(observedActiveTurns) where key.hasPrefix(sessionTurnPrefix) && key != turnKey {
+                    observedActiveTurns.remove(key)
+                }
+                let previous = rows.first { $0.id == rowID && $0.turnID == turnID }
+
+                var phase: TaskPhase
+                var endReason: SessionEndReason?
+                var terminalEndedAt: Date?
+                var waitReason: CodexActivityWaitReason?
+                var replyIDs: Set<String> = []
+
+                if let latestReq = sessionRequests.last {
+                    phase = .waitingApproval
+                    endReason = nil
+                    waitReason = latestReq.isQuestion ? .userInput : .approval
+                    replyIDs = Set(sessionRequests.map(\.id))
+                } else if let settled = settledTurns[turnKey] {
+                    phase = settled.phase
+                    endReason = settled.endReason
+                    terminalEndedAt = settled.endedAt
+                } else if let ov = overlay, let ovPhase = ov.phase {
+                    if ovPhase.isActive {
+                        if live {
+                            phase = ovPhase
+                            endReason = nil
+                        } else {
+                            phase = .ended
+                            endReason = .ended
+                            terminalEndedAt = now
+                        }
+                    } else {
+                        phase = ovPhase
+                        endReason = ov.endReason ?? .ended
+                        terminalEndedAt = ov.updatedAt > .distantPast ? min(now, ov.updatedAt) : now
+                    }
+                } else {
+                    continue
+                }
+
+                let wasObservedActive = observedActiveTurns.contains(turnKey) || !sessionRequests.isEmpty
+                let existingReceipt = receipts[rowID]
+                guard (live && phase.isActive) || !sessionRequests.isEmpty || previous?.phase.isActive == true || existingReceipt != nil || (wasObservedActive && endReason != nil) else {
+                    continue
+                }
+
+                let cwd = (overlay?.cwd.isEmpty == false ? overlay!.cwd : nil) ?? session.cwd
+                let projectName = cwd.isEmpty ? session.surface.shortName : URL(fileURLWithPath: cwd).lastPathComponent
+                let rawModel = overlay?.model ?? session.model
+                let formattedModel = AntigravityPricing.formatModel(rawModel)
+                let overlaySteps = (overlay?.steps ?? []).map { endReason != nil ? $0.endingTask() : $0 }
+                let mergedSteps = IslandStep.visibleSteps(from: overlaySteps)
+                let actionText: String
+                if let latestReq = sessionRequests.last {
+                    actionText = latestReq.isQuestion
+                        ? (latestReq.questions.first?.text ?? "请在灵动岛回答问题")
+                        : "请求使用 \(latestReq.displayToolName)"
+                } else if endReason == .cancelled {
+                    actionText = "已取消"
+                } else if let ovText = overlay?.actionText, !ovText.isEmpty {
+                    actionText = ovText
+                } else {
+                    actionText = phase.title
+                }
+
+                var settledEntry: SettledTurn?
+                if let endReason {
+                    if let existingSettled = settledTurns[turnKey] {
+                        settledEntry = existingSettled
+                    } else {
+                        let resolvedEnded = terminalEndedAt ?? now
+                        let created = SettledTurn(
+                            phase: phase,
+                            endReason: endReason,
+                            endedAt: resolvedEnded,
+                            settledAt: now,
+                            speculativeSummaryIdle: false
+                        )
+                        settledTurns[turnKey] = created
+                        settledEntry = created
+                    }
+                }
+
+                let resolvedStartedAt = overlay?.startedAt ?? overlay?.turnOriginAt
+                let updatedAt: Date
+                if endReason == nil {
+                    updatedAt = max(overlay?.updatedAt ?? .distantPast, sessionRequests.last?.receivedAt ?? .distantPast)
+                } else if let settledEntry {
+                    if let startedAt = resolvedStartedAt, settledEntry.endedAt < startedAt {
+                        updatedAt = startedAt
+                    } else {
+                        updatedAt = settledEntry.endedAt
+                    }
+                } else {
+                    updatedAt = now
+                }
+
+                let resolvedTitle = (overlay?.title.isEmpty == false ? overlay!.title : nil) ?? session.title
+                var row = ActivitySessionSnapshot(
+                    sessionID: rowID,
+                    turnID: turnID,
+                    projectID: "agy:" + (cwd.isEmpty ? session.surface.rawValue : cwd),
+                    projectName: projectName,
+                    title: resolvedTitle,
+                    phase: phase,
+                    actionText: actionText,
+                    updatedAt: updatedAt == .distantPast ? now : updatedAt,
+                    tokenUsage: nil,
+                    endReason: endReason,
+                    modelName: formattedModel.model.isEmpty ? rawModel : formattedModel.model,
+                    reasoningEffort: formattedModel.effort,
+                    startedAt: resolvedStartedAt,
+                    sessionTotalTokens: session.totalTokens > 0 ? session.totalTokens : nil,
+                    provider: "Antigravity",
+                    waitReason: waitReason,
+                    replyRequestIDs: replyIDs,
+                    suppressCompletion: !wasObservedActive,
+                    recentSteps: mergedSteps
+                )
+
+                if phase.isActive {
+                    observedActiveTurns.insert(turnKey)
+                    receipts.removeValue(forKey: rowID)
+                    next.append(row)
+                } else if wasObservedActive || existingReceipt != nil || previous?.phase.isActive == true {
+                    let settledAt = settledEntry?.settledAt ?? now
+                    let receiptAge = now.timeIntervalSince(settledAt)
+                    let retainThreshold: TimeInterval = row.phase == .completed ? 15 : 6
+                    row.isRetainedReceipt = receiptAge >= retainThreshold
+                    if receiptAge < 60 {
+                        receipts[rowID] = row
+                        next.append(row)
+                    } else {
+                        receipts.removeValue(forKey: rowID)
+                        observedActiveTurns.remove(turnKey)
+                    }
+                }
+                continue
+            }
+
+            let resolvedTurnID = turn.turnID ?? overlay.map { "hook-\(max(1, $0.turnIndex))" }
             guard let turnID = resolvedTurnID else { continue }
             let turnKey = "\(rowID):\(turnID)"
             if let staleReceipt = receipts[rowID], staleReceipt.turnID != turnID {
+                if let staleTurn = staleReceipt.turnID,
+                   staleTurn.hasPrefix("hook-"),
+                   turnID.hasPrefix("step-"),
+                   (staleReceipt.startedAt.flatMap { hs in turn.startedAt.map { abs($0.timeIntervalSince(hs)) <= 10 } } ?? false) {
+                    let staleKey = "\(rowID):\(staleTurn)"
+                    if settledTurns[turnKey] == nil, let carried = settledTurns[staleKey] {
+                        settledTurns[turnKey] = carried
+                    }
+                    observedActiveTurns.insert(turnKey)
+                }
                 receipts.removeValue(forKey: rowID)
             }
-            if rows.contains(where: { $0.id == rowID && $0.phase.isActive && ($0.turnID?.hasPrefix("hook-") == true) }) {
-                observedActiveTurns.insert(turnKey)
+            if let activeHookRow = rows.first(where: { $0.id == rowID && $0.phase.isActive && ($0.turnID?.hasPrefix("hook-") == true) }) {
+                let matchesHookTurn = turn.isActive || (activeHookRow.startedAt.flatMap { hs in
+                    turn.startedAt.map { $0 >= hs.addingTimeInterval(-10) }
+                } ?? false)
+                if matchesHookTurn {
+                    observedActiveTurns.insert(turnKey)
+                }
             }
             let sessionTurnPrefix = "\(rowID):"
             for key in Array(observedActiveTurns) where key.hasPrefix(sessionTurnPrefix) && key != turnKey {
                 observedActiveTurns.remove(key)
             }
-            let previous = rows.first { $0.id == rowID && $0.turnID == turnID }
+            let previous = rows.first { row in
+                guard row.id == rowID else { return false }
+                if row.turnID == turnID { return true }
+                guard row.phase.isActive,
+                      row.turnID?.hasPrefix("hook-") == true,
+                      turnID.hasPrefix("step-") else { return false }
+                return turn.isActive || (row.startedAt.flatMap { hs in
+                    turn.startedAt.map { abs($0.timeIntervalSince(hs)) <= 10 }
+                } ?? false)
+            }
 
             var phase: TaskPhase
             var endReason: SessionEndReason?
@@ -808,18 +1142,22 @@ final class AntigravityRuntime: ObservableObject {
             var waitReason: CodexActivityWaitReason?
             var replyIDs: Set<String> = []
 
-            let summaryStopped: (reason: SessionEndReason, endedAt: Date)? = {
+            let summaryStopped: (reason: SessionEndReason, endedAt: Date, speculative: Bool)? = {
                 switch session.summaryStatus {
                 case .killed:
-                    return (.ended, now)
+                    return (.ended, now, false)
                 case .canceling:
-                    return (.cancelled, now)
+                    return (.cancelled, now, false)
                 case .idle(let modifiedAt):
-                    if let modifiedAt, modifiedAt >= turn.updatedAt.addingTimeInterval(-0.5) {
-                        return (.cancelled, min(now, modifiedAt))
+                    if let modifiedAt, modifiedAt >= turnEffectiveUpdatedAt.addingTimeInterval(-0.5) {
+                        if turn.phase == .working && now.timeIntervalSince(modifiedAt) < 0.8 {
+                            scheduleSummaryGraceRescan()
+                            return nil
+                        }
+                        return (.cancelled, min(now, modifiedAt), true)
                     }
-                    if now.timeIntervalSince(turn.updatedAt) >= 2.0 {
-                        return (.cancelled, min(now, modifiedAt ?? now))
+                    if now.timeIntervalSince(turnEffectiveUpdatedAt) >= 2.0 {
+                        return (.cancelled, min(now, modifiedAt ?? now), true)
                     }
                     return nil
                 case .running, .unknown:
@@ -830,18 +1168,27 @@ final class AntigravityRuntime: ObservableObject {
             if let existingSettled = settledTurns[turnKey] {
                 let baseline = max(existingSettled.endedAt, existingSettled.settledAt)
                 let resumedByTranscript = (turn.isActive || session.summaryStatus == .running)
-                    && turn.updatedAt > baseline.addingTimeInterval(0.5)
-                let resumedByOverlay = live
+                    && turnEffectiveUpdatedAt > baseline.addingTimeInterval(0.5)
+                let resumedByOverlay = live && hookAlive
                     && overlay?.phase?.isActive == true
                     && (overlay?.updatedAt ?? .distantPast) > baseline.addingTimeInterval(0.5)
+                    && (turn.isActive || session.summaryStatus == .running)
                 if resumedByTranscript || resumedByOverlay {
                     settledTurns.removeValue(forKey: turnKey)
+                } else if existingSettled.speculativeSummaryIdle, !turn.isActive, turn.phase == .completed {
+                    settledTurns[turnKey] = SettledTurn(
+                        phase: .completed,
+                        endReason: .completed,
+                        endedAt: turnEffectiveUpdatedAt > .distantPast ? min(now, turnEffectiveUpdatedAt) : now,
+                        settledAt: existingSettled.settledAt,
+                        speculativeSummaryIdle: false
+                    )
                 }
             }
 
-            let activeOverlayNewerThanTurn = live
+            let activeOverlayNewerThanTurn = live && hookAlive
                 && overlay?.phase?.isActive == true
-                && (overlay?.updatedAt ?? .distantPast) > turn.updatedAt.addingTimeInterval(0.5)
+                && (overlay?.updatedAt ?? .distantPast) > turnEffectiveUpdatedAt.addingTimeInterval(0.5)
 
             if let settled = settledTurns[turnKey] {
                 phase = settled.phase
@@ -855,9 +1202,13 @@ final class AntigravityRuntime: ObservableObject {
                     phase: phase,
                     endReason: stop.reason,
                     endedAt: stop.endedAt,
-                    settledAt: now
+                    settledAt: now,
+                    speculativeSummaryIdle: stop.speculative
                 )
-            } else if let ov = overlay, ov.updatedAt > turn.updatedAt, let ovPhase = ov.phase {
+            } else if let ov = overlay, let ovPhase = ov.phase,
+                      ov.updatedAt > turnEffectiveUpdatedAt,
+                      (turn.isActive || !ovPhase.isActive),
+                      (!ovPhase.isActive || hookAlive) {
                 if ovPhase.isActive && !live {
                     phase = .ended
                     endReason = .ended
@@ -891,6 +1242,10 @@ final class AntigravityRuntime: ObservableObject {
                     }
                 }
             } else {
+                if !turn.isActive, var staleOverlay = hookOverlays[session.id], staleOverlay.phase?.isActive == true {
+                    staleOverlay.phase = nil
+                    hookOverlays[session.id] = staleOverlay
+                }
                 switch turn.phase {
                 case .working:
                     phase = live ? .working : .ended
@@ -912,21 +1267,20 @@ final class AntigravityRuntime: ObservableObject {
                 case .completed:
                     phase = .completed
                     endReason = .completed
-                    terminalEndedAt = turn.updatedAt > .distantPast ? min(now, turn.updatedAt) : now
+                    terminalEndedAt = turnEffectiveUpdatedAt > .distantPast ? min(now, turnEffectiveUpdatedAt) : now
                 case .failed:
                     phase = .failed
                     endReason = .failed
-                    terminalEndedAt = turn.updatedAt > .distantPast ? min(now, turn.updatedAt) : now
+                    terminalEndedAt = turnEffectiveUpdatedAt > .distantPast ? min(now, turnEffectiveUpdatedAt) : now
                 case .cancelled:
                     phase = .ended
                     endReason = .cancelled
-                    terminalEndedAt = turn.updatedAt > .distantPast ? min(now, turn.updatedAt) : now
+                    terminalEndedAt = turnEffectiveUpdatedAt > .distantPast ? min(now, turnEffectiveUpdatedAt) : now
                 case .idle:
                     continue
                 }
             }
 
-            let sessionRequests = requests.filter { $0.conversationID == session.id && now < $0.deadline }
             if let latestReq = sessionRequests.last {
                 phase = .waitingApproval
                 endReason = nil
@@ -979,7 +1333,7 @@ final class AntigravityRuntime: ObservableObject {
                 if let existingSettled = settledTurns[turnKey] {
                     settledEntry = existingSettled
                 } else {
-                    let fallbackEnded = turn.updatedAt > .distantPast ? min(now, turn.updatedAt) : now
+                    let fallbackEnded = turnEffectiveUpdatedAt > .distantPast ? min(now, turnEffectiveUpdatedAt) : now
                     let resolvedEnded = terminalEndedAt ?? fallbackEnded
                     let created = SettledTurn(
                         phase: phase,
@@ -995,7 +1349,7 @@ final class AntigravityRuntime: ObservableObject {
             let resolvedStartedAt = turn.startedAt ?? overlay?.startedAt
             let updatedAt: Date
             if endReason == nil {
-                updatedAt = max(turn.updatedAt, overlay?.updatedAt ?? .distantPast)
+                updatedAt = max(turnEffectiveUpdatedAt, overlay?.updatedAt ?? .distantPast)
             } else if let settledEntry {
                 if let startedAt = resolvedStartedAt, settledEntry.endedAt < startedAt {
                     updatedAt = startedAt
@@ -1052,47 +1406,109 @@ final class AntigravityRuntime: ObservableObject {
             let sessionRequests = requests.filter { $0.conversationID == id && now < $0.deadline }
             let latestReq = sessionRequests.last
             let resolvedPhase = latestReq != nil ? .waitingApproval : overlay.phase
-            let maxIdleAge: TimeInterval = latestReq != nil ? 130 : 30
-            guard let phase = resolvedPhase, phase.isActive,
-                  now.timeIntervalSince(overlay.updatedAt) <= maxIdleAge,
-                  overlay.hookProcessID.map(Self.isProcessAlive) ?? true else { continue }
+            guard let phase = resolvedPhase else { continue }
             let rowID = "agy:" + id
-            sessionSurfaces[rowID] = overlay.surface
             let turnID = "hook-\(max(1, overlay.turnIndex))"
             let turnKey = "\(rowID):\(turnID)"
-            observedActiveTurns.insert(turnKey)
-            receipts.removeValue(forKey: rowID)
             let formattedModel = AntigravityPricing.formatModel(overlay.model)
             let projectName = overlay.cwd.isEmpty ? overlay.surface.shortName : URL(fileURLWithPath: overlay.cwd).lastPathComponent
-            let resolvedActionText: String = {
-                if let latestReq {
-                    return latestReq.isQuestion
-                        ? (latestReq.questions.first?.text ?? "请在灵动岛回答问题")
-                        : "请求使用 \(latestReq.displayToolName)"
+
+            if phase.isActive {
+                let maxIdleAge: TimeInterval = latestReq != nil ? 130 : 30
+                guard now.timeIntervalSince(overlay.updatedAt) <= maxIdleAge,
+                      overlay.hookProcessID.map(Self.isProcessAlive) ?? true else { continue }
+                sessionSurfaces[rowID] = overlay.surface
+                observedActiveTurns.insert(turnKey)
+                receipts.removeValue(forKey: rowID)
+                let resolvedActionText: String = {
+                    if let latestReq {
+                        return latestReq.isQuestion
+                            ? (latestReq.questions.first?.text ?? "请在灵动岛回答问题")
+                            : "请求使用 \(latestReq.displayToolName)"
+                    }
+                    return overlay.actionText.isEmpty ? phase.title : overlay.actionText
+                }()
+                let row = ActivitySessionSnapshot(
+                    sessionID: rowID,
+                    turnID: turnID,
+                    projectID: "agy:" + (overlay.cwd.isEmpty ? overlay.surface.rawValue : overlay.cwd),
+                    projectName: projectName,
+                    title: overlay.title.isEmpty ? overlay.surface.displayName + " 任务" : overlay.title,
+                    phase: phase,
+                    actionText: resolvedActionText,
+                    updatedAt: max(overlay.updatedAt, latestReq?.receivedAt ?? .distantPast),
+                    tokenUsage: nil,
+                    endReason: nil,
+                    modelName: formattedModel.model.isEmpty ? overlay.model : formattedModel.model,
+                    reasoningEffort: formattedModel.effort,
+                    startedAt: overlay.startedAt,
+                    sessionTotalTokens: nil,
+                    provider: "Antigravity",
+                    waitReason: latestReq.map { $0.isQuestion ? .userInput : .approval },
+                    replyRequestIDs: Set(sessionRequests.map(\.id)),
+                    recentSteps: IslandStep.visibleSteps(from: overlay.steps)
+                )
+                next.append(row)
+            } else if let endReason = overlay.endReason {
+                let previous = rows.first { $0.id == rowID && $0.turnID == turnID }
+                let wasObservedActive = observedActiveTurns.contains(turnKey) || previous?.phase.isActive == true
+                let existingReceipt = receipts[rowID]
+                guard wasObservedActive || existingReceipt != nil else { continue }
+                sessionSurfaces[rowID] = overlay.surface
+                let settled: SettledTurn
+                if let existingSettled = settledTurns[turnKey] {
+                    settled = existingSettled
+                } else {
+                    let endedAt = overlay.updatedAt > .distantPast ? min(now, overlay.updatedAt) : now
+                    let created = SettledTurn(
+                        phase: phase,
+                        endReason: endReason,
+                        endedAt: endedAt,
+                        settledAt: now,
+                        speculativeSummaryIdle: false
+                    )
+                    settledTurns[turnKey] = created
+                    settled = created
                 }
-                return overlay.actionText.isEmpty ? phase.title : overlay.actionText
-            }()
-            let row = ActivitySessionSnapshot(
-                sessionID: rowID,
-                turnID: turnID,
-                projectID: "agy:" + (overlay.cwd.isEmpty ? overlay.surface.rawValue : overlay.cwd),
-                projectName: projectName,
-                title: overlay.title.isEmpty ? overlay.surface.displayName + " 任务" : overlay.title,
-                phase: phase,
-                actionText: resolvedActionText,
-                updatedAt: max(overlay.updatedAt, latestReq?.receivedAt ?? .distantPast),
-                tokenUsage: nil,
-                endReason: nil,
-                modelName: formattedModel.model.isEmpty ? overlay.model : formattedModel.model,
-                reasoningEffort: formattedModel.effort,
-                startedAt: overlay.startedAt,
-                sessionTotalTokens: nil,
-                provider: "Antigravity",
-                waitReason: latestReq.map { $0.isQuestion ? .userInput : .approval },
-                replyRequestIDs: Set(sessionRequests.map(\.id)),
-                recentSteps: IslandStep.visibleSteps(from: overlay.steps)
-            )
-            next.append(row)
+                let receiptAge = now.timeIntervalSince(settled.settledAt)
+                guard receiptAge < 60 else {
+                    receipts.removeValue(forKey: rowID)
+                    observedActiveTurns.remove(turnKey)
+                    continue
+                }
+                let retainThreshold: TimeInterval = settled.phase == .completed ? 15 : 6
+                let resolvedActionText = endReason == .cancelled
+                    ? "已取消"
+                    : (overlay.actionText.isEmpty ? settled.phase.title : overlay.actionText)
+                let endedAt: Date = {
+                    if let startedAt = overlay.startedAt, settled.endedAt < startedAt { return startedAt }
+                    return settled.endedAt
+                }()
+                var row = ActivitySessionSnapshot(
+                    sessionID: rowID,
+                    turnID: turnID,
+                    projectID: "agy:" + (overlay.cwd.isEmpty ? overlay.surface.rawValue : overlay.cwd),
+                    projectName: projectName,
+                    title: overlay.title.isEmpty ? overlay.surface.displayName + " 任务" : overlay.title,
+                    phase: settled.phase,
+                    actionText: resolvedActionText,
+                    updatedAt: endedAt,
+                    tokenUsage: nil,
+                    endReason: settled.endReason,
+                    modelName: formattedModel.model.isEmpty ? overlay.model : formattedModel.model,
+                    reasoningEffort: formattedModel.effort,
+                    startedAt: overlay.startedAt,
+                    sessionTotalTokens: nil,
+                    provider: "Antigravity",
+                    waitReason: nil,
+                    replyRequestIDs: [],
+                    suppressCompletion: !wasObservedActive,
+                    recentSteps: IslandStep.visibleSteps(from: overlay.steps.map { $0.endingTask() })
+                )
+                row.isRetainedReceipt = receiptAge >= retainThreshold
+                receipts[rowID] = row
+                next.append(row)
+            }
         }
 
         // Settle previously active rows that disappeared abruptly.

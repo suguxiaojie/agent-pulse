@@ -279,18 +279,77 @@ enum AntigravityHookForwarder {
         return Data("{}\n".utf8)
     }
 
+    static func parseArguments(_ arguments: [String]) -> (routePath: String, explicitEvent: String?)? {
+        guard arguments.first == "--antigravity-hook" else { return nil }
+        var routePath: String?
+        var explicitEvent: String?
+        var index = 1
+        while index < arguments.count {
+            let flag = arguments[index]
+            guard index + 1 < arguments.count else { return nil }
+            let value = arguments[index + 1]
+            switch flag {
+            case "--configuration":
+                guard routePath == nil, !value.isEmpty else { return nil }
+                routePath = value
+            case "--event":
+                guard explicitEvent == nil, !value.isEmpty else { return nil }
+                explicitEvent = value
+            default:
+                return nil
+            }
+            index += 2
+        }
+        guard let routePath else { return nil }
+        return (routePath, explicitEvent)
+    }
+
+    /// Antigravity < 1.5.4 omitted `hookEventName` (and `cwd`) from hook stdin JSON.
+    /// Resolve from stdin `hookEventName` -> CLI `--event` -> protojson `HookArgs` oneof shape,
+    /// so `PreToolUse` never falls through to `{}` (which Antigravity treats as an empty-reason deny).
+    static func resolveEventName(object: [String: Any], explicitEvent: String?) -> String {
+        if let name = (object["hookEventName"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !name.isEmpty {
+            return name
+        }
+        if let explicit = explicitEvent?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !explicit.isEmpty {
+            return explicit
+        }
+        if object["toolCall"] is [String: Any] {
+            if object["result"] != nil || object["error"] != nil {
+                return "PostToolUse"
+            }
+            return "PreToolUse"
+        }
+        if object["terminationReason"] != nil || object["executionNum"] != nil || object["fullyIdle"] != nil {
+            return "Stop"
+        }
+        if object["modelOutput"] != nil || object["modelThinking"] != nil {
+            return "PostInvocation"
+        }
+        if object["invocationNum"] != nil || object["initialNumSteps"] != nil {
+            return "PreInvocation"
+        }
+        if let conv = object["conversationId"] as? String, !conv.isEmpty {
+            return "SessionStart"
+        }
+        return ""
+    }
+
     static func run(arguments: [String]) {
         signal(SIGPIPE, SIG_IGN)
+        let parsedArgs = parseArguments(arguments)
         let input = ClaudeCodeHookIO.readStandardInput(maximumBytes: 1_048_576)
         let object = input.flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] } ?? [:]
-        let event = (object["hookEventName"] as? String) ?? ""
+        let event = resolveEventName(object: object, explicitEvent: parsedArgs?.explicitEvent)
         var responseData = safeResponse(for: event)
         defer {
             ClaudeCodeHookIO.writeStandardOutput(responseData)
         }
 
-        guard arguments.count == 3, arguments[1] == "--configuration",
-              let route = ClaudeCodeRoute.read(from: arguments[2]),
+        guard let parsedArgs,
+              let route = ClaudeCodeRoute.read(from: parsedArgs.routePath),
               !event.isEmpty,
               let conversationID = object["conversationId"] as? String,
               !conversationID.isEmpty, conversationID.utf8.count <= 256 else {
@@ -298,8 +357,9 @@ enum AntigravityHookForwarder {
         }
 
         let transcriptPath = (object["transcriptPath"] as? String) ?? ""
-        let cwd = (object["cwd"] as? String) ?? ""
         let workspacePaths = (object["workspacePaths"] as? [Any])?.compactMap { $0 as? String } ?? []
+        let rawCwd = (object["cwd"] as? String) ?? ""
+        let cwd = rawCwd.isEmpty ? (workspacePaths.first ?? "") : rawCwd
         let parentConversationID = object["parentConversationId"] as? String
         let toolCall = object["toolCall"] as? [String: Any]
         let toolName = (toolCall?["name"] as? String) ?? ""

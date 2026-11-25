@@ -4,6 +4,7 @@ import UserNotifications
 
 final class QuotaResetNotifier: NSObject, UNUserNotificationCenterDelegate {
     var onOpenCenter: (() -> Void)?
+    var onOpenNotificationCenterID: ((String) -> Void)?
     var onConfirmManual: ((String) -> Void)?
 
     private let center = UNUserNotificationCenter.current()
@@ -149,7 +150,12 @@ final class QuotaResetNotifier: NSObject, UNUserNotificationCenterDelegate {
         )
         DispatchQueue.main.async { [weak self] in
             switch action {
-            case .openCenter: self?.onOpenCenter?()
+            case .openCenter:
+                if let handler = self?.onOpenNotificationCenterID {
+                    handler(request.identifier)
+                } else {
+                    self?.onOpenCenter?()
+                }
             case .confirmManual: self?.onConfirmManual?(request.identifier)
             case .openSource:
                 if let value = request.content.userInfo["sourceURL"] as? String,

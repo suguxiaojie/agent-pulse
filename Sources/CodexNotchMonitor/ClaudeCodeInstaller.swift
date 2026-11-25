@@ -40,6 +40,7 @@ struct ClaudeCodeInstaller: Sendable {
     private static let helperName = "ClaudePulseHelper"
 
     let configurationDirectory: URL
+    let isolatedAccountsRootURL: URL?
     /// Claude Code's global config: `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json`.
     let globalConfigURL: URL
     let settingsURL: URL
@@ -53,6 +54,7 @@ struct ClaudeCodeInstaller: Sendable {
 
     init(socketURL: URL, authenticationToken: String, configurationDirectory: URL? = nil,
          supportDirectory: URL? = nil, helperURL: URL? = nil,
+         isolatedAccountsRootURL: URL? = nil,
          environment: [String: String] = ProcessInfo.processInfo.environment,
          channelIdentifier: String = ClaudeCodeChannel.identifier) {
         let custom = configurationDirectory
@@ -60,6 +62,15 @@ struct ClaudeCodeInstaller: Sendable {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let directory = custom ?? home.appendingPathComponent(".claude", isDirectory: true)
         self.configurationDirectory = directory.standardizedFileURL
+        if let isolatedAccountsRootURL {
+            self.isolatedAccountsRootURL = isolatedAccountsRootURL.standardizedFileURL
+        } else if custom == nil {
+            self.isolatedAccountsRootURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+                .appendingPathComponent("Claude Account Assistant/accounts", isDirectory: true)
+                .standardizedFileURL
+        } else {
+            self.isolatedAccountsRootURL = nil
+        }
         globalConfigURL = (custom?.standardizedFileURL ?? home).appendingPathComponent(".claude.json")
         settingsURL = self.configurationDirectory.appendingPathComponent("settings.json").resolvingSymlinksInPath()
         self.socketURL = socketURL
@@ -81,6 +92,48 @@ struct ClaudeCodeInstaller: Sendable {
     var hookCommand: String { [quote(installedHelperURL.path), "--claude-code", "--configuration", quote(routeURL.path)].joined(separator: " ") }
     var statusLineCommand: String { [quote(installedHelperURL.path), "--claude-statusline", "--configuration", quote(routeURL.path)].joined(separator: " ") }
     var projectsURL: URL { configurationDirectory.appendingPathComponent("projects", isDirectory: true) }
+
+    /// All local Claude configuration directories owned by the current user (`~/.claude` plus isolated account profiles).
+    /// Reads directory structure only; never accesses `accounts.json`, emails, browser profiles or credentials.
+    func allConfigurationDirectories() -> [URL] {
+        var result = [configurationDirectory]
+        var seen: Set<String> = [configurationDirectory.resolvingSymlinksInPath().path]
+        for directory in isolatedConfigurationDirectories() {
+            let canonical = directory.resolvingSymlinksInPath().path
+            if seen.insert(canonical).inserted { result.append(directory) }
+        }
+        return result
+    }
+
+    func allProjectsURLs() -> [URL] {
+        allConfigurationDirectories().map { $0.appendingPathComponent("projects", isDirectory: true) }
+    }
+
+    func isolatedConfigurationDirectories() -> [URL] {
+        guard let root = isolatedAccountsRootURL, Self.isOwnedDirectoryNoFollow(root.path),
+              let entries = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else {
+            return []
+        }
+        let uid = getuid()
+        return entries
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .prefix(64)
+            .compactMap { entry -> URL? in
+                let name = entry.lastPathComponent
+                guard name.count == 32,
+                      name.allSatisfy({ ("0"..."9").contains($0) || ("a"..."f").contains($0) }),
+                      Self.isOwnedDirectoryNoFollow(entry.path, uid: uid) else { return nil }
+                let claude = entry.appendingPathComponent("claude", isDirectory: true)
+                guard Self.isOwnedDirectoryNoFollow(claude.path, uid: uid) else { return nil }
+                return claude.standardizedFileURL
+            }
+    }
+
+    private static func isOwnedDirectoryNoFollow(_ path: String, uid: uid_t = getuid()) -> Bool {
+        var metadata = stat()
+        guard lstat(path, &metadata) == 0 else { return false }
+        return metadata.st_uid == uid && (metadata.st_mode & S_IFMT) == S_IFDIR
+    }
 
     // MARK: Inspection
 

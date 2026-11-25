@@ -87,6 +87,10 @@ final class MonitorCenterWindowController: NSObject, NSWindowDelegate {
             NSApp.activate(ignoringOtherApps: true)
             self?.show(section: .tibo)
         }
+        store.onOpenCenterSection = { [weak self] section in
+            NSApp.activate(ignoringOtherApps: true)
+            self?.show(section: section)
+        }
         store.setExportDirectoryPresenter { [weak self] currentDirectory, completion in
             self?.presentExportDirectoryPanel(
                 currentDirectory: currentDirectory,

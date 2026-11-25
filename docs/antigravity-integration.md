@@ -21,7 +21,7 @@ Agent Pulse 支持在同一套监控中心、菜单栏玻璃面板与灵动岛�
   - 首次写入前自动备份 `hooks.json.codex-pulse-backup`。
   - 仅管理顶层命名键 `"codex-pulse"`，保留用户及其他插件的全部命名 Hook；停用时仅移除 `"codex-pulse"`。
   - **可选 `PreToolUse` 灵动岛审批与提问回答**：开启「灵动岛审批与提问回答」时注册受控 `PreToolUse` 匹配器，结合客户端本地策略（CLI 的 `always-proceed`、桌面端的 `Turbo` 及工作区内常规读写均毫秒级放行不打扰）仅在真正需要确认的工具调用或 `ask_question` 多选／输入提问时唤醒灵动岛卡片；关闭该开关时不注册 `PreToolUse`。
-  - **Fail-Safe 安全兜底（严禁静默自动批准）**：`ClaudePulseHelper` 在 `--antigravity-hook` 模式下无论配置缺失、断线、2 分钟等待超时或点击「在原客户端处理」，均保证对 `PreToolUse` 输出 `{"decision":"allow"}`（交回 Antigravity 自身权限引擎处理，绝不越权自动批准）、对 `Stop` 输出 `{"decision":"stop"}`、对其余事件输出 `{}`。仅当用户在灵动岛明确点击「批准一次」时才返回 `{"decision":"auto_approve"}`。
+  - **Fail-Safe 安全兜底与旧版本协议兼容（严禁静默自动批准）**：安装器按事件槽位显式写入 `--event <EventName>`，同时 `ClaudePulseHelper` 在 `--antigravity-hook` 模式下按 `stdin.hookEventName` → `--event` 参数 → `HookArgs` 载荷字段结构（兼容 `agy < 1.5.4` 未携带 `hookEventName` 与 `cwd` 的存量进程）三重解析事件类型；无论配置缺失、断线、2 分钟等待超时或点击「在原客户端处理」，均保证对 `PreToolUse` 输出 `{"decision":"allow"}`（交回 Antigravity 自身权限引擎处理，绝不输出空 `{}` 触发无原因拒绝，也绝不越权自动批准）、对 `Stop` 输出 `{"decision":"stop"}`、对其余事件输出 `{}`。仅当用户在灵动岛明确点击「批准一次」时才返回 `{"decision":"auto_approve"}`。
 - **CLI 状态栏（`~/.gemini/antigravity-cli/settings.json`）**：
   - 首次写入前自动备份 `settings.json.codex-pulse-backup` 并保持原有文件权限（如 `0600`）。
   - 若已有自定义 `statusLine`，先将其保存至私有通道目录并在每次运行中原样转发标准输入与输出；关闭采集或停用接入时完整恢复原 `statusLine`。

@@ -3,6 +3,7 @@ import Foundation
 enum SystemNotificationTests {
     static func run() throws {
         try creditExpiryReminders()
+        try providerQuotaResetReminders()
         func signal(_ id: String, text: String = "重置预告", active: Bool = true) -> CodexResetRadarSignal {
             .init(tweetId: id, summary: text, at: "2026-10-23T10:00:00Z",
                   url: "https://x.com/thsottiaux/status/\(id)", kind: "signal",
@@ -177,5 +178,138 @@ extension SystemNotificationTests {
         var damaged = CreditExpiryReminderLedger(data: Data("invalid".utf8))
         precondition(damaged.observe(snapshot, accountID: "a", now: at(20)).count == 1)
         print("Credit expiry reminders: 24/12/6 thresholds, restart, catch-up, account scope, availability, duplicates and expiry changes passed")
+    }
+
+    static func providerQuotaResetReminders() throws {
+        let base = Date(timeIntervalSince1970: 2_000_000_000)
+        let resetAt = base.addingTimeInterval(3_600)
+
+        func obs(
+            providerID: String,
+            providerName: String,
+            windowID: String,
+            windowTitle: String,
+            remaining: Int,
+            resetsAt: Date?,
+            capturedAt: Date,
+            allowsMidCycleJump: Bool
+        ) -> ProviderQuotaWindowObservation {
+            .init(
+                providerID: providerID,
+                providerName: providerName,
+                windowID: windowID,
+                windowTitle: windowTitle,
+                remainingPercent: remaining,
+                resetsAt: resetsAt,
+                capturedAt: capturedAt,
+                allowsMidCycleJump: allowsMidCycleJump
+            )
+        }
+
+        // 1. Threshold boundary: remaining 81% stays silent at reset; remaining 80% fires on schedule!
+        var ledger = ProviderQuotaResetLedger()
+        precondition(ledger.observe([
+            obs(providerID: "antigravity", providerName: "Antigravity", windowID: "gemini-5h", windowTitle: "Gemini 5 小时额度", remaining: 81, resetsAt: resetAt, capturedAt: base, allowsMidCycleJump: true),
+            obs(providerID: "antigravity", providerName: "Antigravity", windowID: "3p-5h", windowTitle: "合作模型 5 小时", remaining: 80, resetsAt: resetAt, capturedAt: base, allowsMidCycleJump: true)
+        ], now: base, enabled: true).isEmpty)
+        precondition(ledger.evaluateDueResets(now: resetAt.addingTimeInterval(-1), enabled: true).isEmpty)
+        let due = ledger.evaluateDueResets(now: resetAt.addingTimeInterval(5), enabled: true)
+        precondition(due.count == 1, "only consumed <=80% window notifies at reset boundary")
+        precondition(due[0].title == "Antigravity 额度已重置" && due[0].body.contains("合作模型 5 小时") && !due[0].body.contains("Gemini 5 小时额度"))
+        precondition(due[0].body.contains("80%") && due[0].category == "QUOTA_RECOVERY" && due[0].playsSound)
+        precondition(due[0].identifier.hasPrefix("provider-reset-antigravity-"))
+        precondition(due[0].islandAlert?.kind == .quotaRecovery && due[0].islandAlert?.actions.first?.title == "查看额度")
+        precondition(due[0].islandAlert?.isEnabled(signals: false, recovery: true) == true)
+        precondition(due[0].islandAlert?.isEnabled(signals: true, recovery: false) == false)
+
+        // 2. Restart persistence + deduplication: same cycle never double-fires when fresh snapshot arrives afterwards
+        ledger = ProviderQuotaResetLedger(data: ledger.data)
+        precondition(ledger.evaluateDueResets(now: resetAt.addingTimeInterval(20), enabled: true).isEmpty)
+        let nextReset = resetAt.addingTimeInterval(5 * 3600)
+        precondition(ledger.observe([
+            obs(providerID: "antigravity", providerName: "Antigravity", windowID: "3p-5h", windowTitle: "合作模型 5 小时", remaining: 100, resetsAt: nextReset, capturedAt: resetAt.addingTimeInterval(30), allowsMidCycleJump: true)
+        ], now: resetAt.addingTimeInterval(30), enabled: true).isEmpty, "observed new cycle after scheduled alert does not duplicate")
+
+        // 3. Multi-window coalescing for same provider at same reset time
+        var multi = ProviderQuotaResetLedger()
+        _ = multi.observe([
+            obs(providerID: "antigravity", providerName: "Antigravity", windowID: "gemini-5h", windowTitle: "Gemini 5 小时额度", remaining: 60, resetsAt: resetAt, capturedAt: base, allowsMidCycleJump: true),
+            obs(providerID: "antigravity", providerName: "Antigravity", windowID: "gemini-weekly", windowTitle: "Gemini 每周额度", remaining: 75, resetsAt: resetAt, capturedAt: base, allowsMidCycleJump: true)
+        ], now: base, enabled: true)
+        let coalesced = multi.evaluateDueResets(now: resetAt.addingTimeInterval(10), enabled: true)
+        precondition(coalesced.count == 1 && coalesced[0].body.contains("Gemini 5 小时额度") && coalesced[0].body.contains("Gemini 每周额度"),
+                     "same-provider windows resetting together coalesce into one notification")
+
+        // 4. Claude multi-account switch (`claude-switch`) mid-cycle jump MUST NOT false-trigger!
+        var claudeLedger = ProviderQuotaResetLedger()
+        _ = claudeLedger.observe([
+            obs(providerID: "claude", providerName: "Claude Code", windowID: "five_hour", windowTitle: "5 小时额度", remaining: 30, resetsAt: resetAt, capturedAt: base, allowsMidCycleJump: false)
+        ], now: base, enabled: true)
+        let switched = claudeLedger.observe([
+            obs(providerID: "claude", providerName: "Claude Code", windowID: "five_hour", windowTitle: "5 小时额度", remaining: 100, resetsAt: resetAt.addingTimeInterval(7_200), capturedAt: base.addingTimeInterval(300), allowsMidCycleJump: false)
+        ], now: base.addingTimeInterval(300), enabled: true)
+        precondition(switched.isEmpty, "Claude account switch before resetsAt must never trigger a fake reset alert")
+
+        // Normal Claude consumed window reaching resetsAt DOES fire!
+        let claudeResetAt = base.addingTimeInterval(1_800)
+        _ = claudeLedger.observe([
+            obs(providerID: "claude", providerName: "Claude Code", windowID: "five_hour", windowTitle: "5 小时额度", remaining: 55, resetsAt: claudeResetAt, capturedAt: base.addingTimeInterval(400), allowsMidCycleJump: false)
+        ], now: base.addingTimeInterval(400), enabled: true)
+        let claudeDue = claudeLedger.evaluateDueResets(now: claudeResetAt.addingTimeInterval(2), enabled: true)
+        precondition(claudeDue.count == 1 && claudeDue[0].title == "Claude Code 额度已重置" && claudeDue[0].identifier.hasPrefix("provider-reset-claude-"))
+
+        // 5. Grok active billing poll: observed rollover AND mid-cycle recovery notify cleanly
+        var grokLedger = ProviderQuotaResetLedger()
+        _ = grokLedger.observe([
+            obs(providerID: "grok", providerName: "Grok CLI", windowID: "USAGE_PERIOD_TYPE_WEEKLY", windowTitle: "每周额度", remaining: 62, resetsAt: resetAt, capturedAt: base, allowsMidCycleJump: true)
+        ], now: base, enabled: true)
+        let grokRollover = grokLedger.observe([
+            obs(providerID: "grok", providerName: "Grok CLI", windowID: "USAGE_PERIOD_TYPE_WEEKLY", windowTitle: "每周额度", remaining: 100, resetsAt: resetAt.addingTimeInterval(7 * 86_400), capturedAt: resetAt.addingTimeInterval(15), allowsMidCycleJump: true)
+        ], now: resetAt.addingTimeInterval(15), enabled: true)
+        precondition(grokRollover.count == 1 && grokRollover[0].title == "Grok CLI 额度已重置" && grokRollover[0].body.contains("62% → 100%"))
+        precondition(grokLedger.evaluateDueResets(now: resetAt.addingTimeInterval(20), enabled: true).isEmpty)
+
+        // Mid-cycle Grok official recovery
+        let grokNextReset = resetAt.addingTimeInterval(7 * 86_400)
+        _ = grokLedger.observe([
+            obs(providerID: "grok", providerName: "Grok CLI", windowID: "USAGE_PERIOD_TYPE_WEEKLY", windowTitle: "每周额度", remaining: 50, resetsAt: grokNextReset, capturedAt: resetAt.addingTimeInterval(600), allowsMidCycleJump: true)
+        ], now: resetAt.addingTimeInterval(600), enabled: true)
+        let grokMidJump = grokLedger.observe([
+            obs(providerID: "grok", providerName: "Grok CLI", windowID: "USAGE_PERIOD_TYPE_WEEKLY", windowTitle: "每周额度", remaining: 100, resetsAt: grokNextReset, capturedAt: resetAt.addingTimeInterval(1_200), allowsMidCycleJump: true)
+        ], now: resetAt.addingTimeInterval(1_200), enabled: true)
+        precondition(grokMidJump.count == 1 && grokMidJump[0].title == "Grok CLI 额度已恢复" && grokMidJump[0].body.contains("50% → 100%"))
+
+        // 6. Ancient expired snapshot (>30m past resetsAt) never spams on cold start; brief sleep catch-up (<=30m) works
+        var cold = ProviderQuotaResetLedger()
+        let ancient = cold.observe([
+            obs(providerID: "antigravity", providerName: "Antigravity", windowID: "gemini-5h", windowTitle: "Gemini 5 小时额度", remaining: 40, resetsAt: base.addingTimeInterval(-3_600), capturedAt: base.addingTimeInterval(-7_200), allowsMidCycleJump: true)
+        ], now: base, enabled: true)
+        precondition(ancient.isEmpty, "ancient expired reset does not spam on startup")
+        let briefCatchup = cold.observe([
+            obs(providerID: "antigravity", providerName: "Antigravity", windowID: "gemini-5h", windowTitle: "Gemini 5 小时额度", remaining: 40, resetsAt: base.addingTimeInterval(-600), capturedAt: base.addingTimeInterval(-3_600), allowsMidCycleJump: true)
+        ], now: base, enabled: true)
+        precondition(briefCatchup.count == 1, "brief <=30m sleep catch-up notifies once")
+
+        // 7. Disabled toggle silences & marks expired cycles; disabling provider clears tracked windows; damaged data safe
+        var toggleLedger = ProviderQuotaResetLedger()
+        _ = toggleLedger.observe([
+            obs(providerID: "claude", providerName: "Claude Code", windowID: "five_hour", windowTitle: "5 小时额度", remaining: 50, resetsAt: resetAt, capturedAt: base, allowsMidCycleJump: false)
+        ], now: base, enabled: false)
+        precondition(toggleLedger.evaluateDueResets(now: resetAt.addingTimeInterval(5), enabled: false).isEmpty)
+        precondition(toggleLedger.evaluateDueResets(now: resetAt.addingTimeInterval(10), enabled: true).isEmpty, "turning reminders on later does not replay passed resets")
+
+        _ = toggleLedger.observe([
+            obs(providerID: "grok", providerName: "Grok CLI", windowID: "weekly", windowTitle: "每周额度", remaining: 40, resetsAt: nextReset, capturedAt: resetAt.addingTimeInterval(20), allowsMidCycleJump: true)
+        ], now: resetAt.addingTimeInterval(20), enabled: true)
+        toggleLedger.clear(providerID: "grok")
+        precondition(toggleLedger.evaluateDueResets(now: nextReset.addingTimeInterval(5), enabled: true).isEmpty, "disabling provider clears pending reminders")
+
+        var corrupted = ProviderQuotaResetLedger(data: Data("not-json".utf8))
+        precondition(corrupted.observe([
+            obs(providerID: "antigravity", providerName: "Antigravity", windowID: "gemini-5h", windowTitle: "Gemini 5 小时额度", remaining: 70, resetsAt: resetAt, capturedAt: base, allowsMidCycleJump: true)
+        ], now: base, enabled: true).isEmpty)
+        precondition(corrupted.evaluateDueResets(now: resetAt.addingTimeInterval(1), enabled: true).count == 1)
+
+        print("Provider quota reset reminders: <=80% threshold, scheduled rollover, coalescing, Claude switch guard, Grok mid-cycle recovery, dedupe and catch-up passed")
     }
 }

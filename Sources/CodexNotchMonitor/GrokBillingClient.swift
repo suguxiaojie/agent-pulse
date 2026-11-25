@@ -28,11 +28,37 @@ final class GrokBillingClient: @unchecked Sendable {
         lock.lock(); cancelled = true; let p = process; lock.unlock()
         if let p, p.isRunning { p.terminate() }
     }
-    static func executable(home: URL) -> URL? {
+    static func executables(home: URL) -> [URL] {
         let user = FileManager.default.homeDirectoryForCurrentUser
-        return [user.appendingPathComponent(".local/bin/grok"), home.appendingPathComponent("bin/grok"),
-                URL(fileURLWithPath: "/opt/homebrew/bin/grok"), URL(fileURLWithPath: "/usr/local/bin/grok")]
-            .first { FileManager.default.isExecutableFile(atPath: $0.path) }
+        let candidates = [
+            home.appendingPathComponent("bin/grok"),
+            user.appendingPathComponent(".local/bin/grok"),
+            URL(fileURLWithPath: "/opt/homebrew/bin/grok"),
+            URL(fileURLWithPath: "/usr/local/bin/grok")
+        ]
+        var seen = Set<String>()
+        return candidates.filter { url in
+            guard FileManager.default.isExecutableFile(atPath: url.path) else { return false }
+            return seen.insert(url.resolvingSymlinksInPath().path).inserted
+        }
+    }
+    static func executable(home: URL) -> URL? { executables(home: home).first }
+    func fetch(executables: [URL], home: URL, timeout: TimeInterval = 20) throws -> GrokQuotaSnapshot {
+        guard !executables.isEmpty else { throw Failure.missingCLI }
+        var lastError: Error = Failure.missingCLI
+        for (index, candidate) in executables.enumerated() {
+            do {
+                return try fetch(executable: candidate, home: home, timeout: timeout)
+            } catch let error as Failure {
+                lastError = error
+                let canFallback = index + 1 < executables.count
+                    && [.launch, .unsupported, .malformed].contains(error)
+                if !canFallback { throw error }
+            } catch {
+                throw error
+            }
+        }
+        throw lastError
     }
     func fetch(executable: URL, home: URL, timeout: TimeInterval = 20) throws -> GrokQuotaSnapshot {
         let deadline = Date().addingTimeInterval(timeout)

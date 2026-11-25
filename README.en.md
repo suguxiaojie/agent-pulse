@@ -6,7 +6,7 @@
 
 **Quotas, live tasks, interactive approvals, and local usage for Codex, Claude Code, Grok CLI, and Google Antigravity — unified in your menu bar and MacBook notch.**
 
-[简体中文](README.md) · [Download v2.1.0](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.1.0) · [MIT License](LICENSE)
+[简体中文](README.md) · [Download v2.2.0](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.2.0) · [MIT License](LICENSE)
 
 macOS 13+ · Native SwiftUI / AppKit · Apple Silicon (`arm64`) & Intel (`x86_64`)
 
@@ -14,7 +14,7 @@ macOS 13+ · Native SwiftUI / AppKit · Apple Silicon (`arm64`) & Intel (`x86_64
 
 Agent Pulse (formerly Codex Pulse) is a native macOS menu bar and Dynamic Island monitor for AI coding agents. Official quotas come from your local Codex App Server, Claude Code status line, official xAI `grok` billing queries, and Google Antigravity's `agy` status line. Live tasks and interactive prompts flow through desktop IPC, isolated named Hooks, or process-verified local leader sockets. **Agent Pulse never reads, stores, or transmits account credentials or emails, and never silently auto-approves tool execution.**
 
-**v2.1.0 (Build 36)** introduces four-provider telemetry tiles with authentic official brand vector icons, a uniform-height four-agent Dynamic Island usage dashboard, and interactive Dynamic Island Q&A and tool approvals for Google Antigravity.
+**v2.2.0 (Build 37)** adds idle Dynamic Island sync with the last finished agent (top-left quota & pixel mascot), multi-provider quota reset/recovery alerts (when consumed to ≤80%) across Claude Code, Grok CLI, and Antigravity, Claude Code multi-account isolated directory tracking, plus fixes for Antigravity completion confetti timing and refresh button flicker.
 
 ---
 
@@ -35,7 +35,7 @@ Incoming approvals and `ask_question` prompts take focus automatically, while cl
 
 - **Inline Q&A & Explicit One-Shot Approvals**: Answer `ask_question` prompts and approve or reject sensitive tool calls once across Codex (desktop IPC & turn-scoped OneNative App Servers), Claude Code, Grok CLI, and Google Antigravity. Original option IDs are preserved with no persistent grants; disconnects or timeouts always fail-safe back to the native client without auto-approval.
 - **Zero-Jitter Four-Provider Usage Stage**: Switch across Codex, Claude, Grok, and Antigravity with authentic vector marks, dual concentric quota rings, a 30-day cost bar chart, and a single-screen Token activity heatmap locked to an identical height across all providers.
-- **Completion Receipts & Expiry Alerts**: Completed turns lock their exact runtime and expire cleanly after 60 seconds, with optional completion audio and three confetti presets. Followed signals, quota recovery, and Codex reset-credit reminders (24h / 12h / 6h before expiry) notify both macOS Notification Center and the island.
+- **Completion Receipts & Multi-Agent Reset Alerts**: Completed turns lock their exact runtime and expire cleanly after 60 seconds, with optional completion audio and three confetti presets. Idle Dynamic Island quota and pixel mascot automatically sync to the last finished agent; quota reset/recovery reminders (≤80% consumed) across Codex, Claude Code, Grok CLI, and Antigravity, plus Codex reset-credit reminders (24h / 12h / 6h before expiry) notify both macOS Notification Center and the island.
 
 ---
 
@@ -99,9 +99,9 @@ Customize Dynamic Island materials, edge lighting, mascot size, glass panel modu
 </p>
 
 <details>
-<summary>Installation & Permissions (v2.1.0 · Build 36)</summary>
+<summary>Installation & Permissions (v2.2.0 · Build 37)</summary>
 <p align="center">
-  <img src="docs/images/pulse-setup.png" alt="Installation & permissions: v2.1.0 Build 36, shared Codex connection, and notification switches" width="84%">
+  <img src="docs/images/pulse-setup.png" alt="Installation & permissions: v2.2.0 Build 37, shared Codex connection, and notification switches" width="84%">
 </p>
 </details>
 
@@ -109,16 +109,16 @@ Customize Dynamic Island materials, edge lighting, mascot size, glass panel modu
 
 ## Download & Install
 
-Download the installer matching your Mac from [GitHub Releases (`v2.1.0`)](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.1.0):
+Download the installer matching your Mac from [GitHub Releases (`v2.2.0`)](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.2.0):
 
 | Mac Processor | Installer |
 |---|---|
-| **Apple Silicon (M1 / M2 / M3 / M4)** | [CodexNotchMonitor-v2.1.0-arm64.dmg](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.1.0/CodexNotchMonitor-v2.1.0-arm64.dmg) |
-| **Intel (`x86_64`)** | [CodexNotchMonitor-v2.1.0-x86_64.dmg](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.1.0/CodexNotchMonitor-v2.1.0-x86_64.dmg) |
+| **Apple Silicon (M1 / M2 / M3 / M4)** | [CodexNotchMonitor-v2.2.0-arm64.dmg](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.2.0/CodexNotchMonitor-v2.2.0-arm64.dmg) |
+| **Intel (`x86_64`)** | [CodexNotchMonitor-v2.2.0-x86_64.dmg](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.2.0/CodexNotchMonitor-v2.2.0-x86_64.dmg) |
 
 1. Open the `.dmg` and drag **Agent Pulse** (`CodexNotchMonitor.app`) into `/Applications`.
 2. Launch the app. Codex quotas require a signed-in Codex or ChatGPT Desktop app; Claude Code, Grok CLI, and Google Antigravity can be enabled anytime in Monitor Center.
-3. Builds are ad-hoc signed and not notarized by Apple. If Gatekeeper prompts on first launch, verify `SHA256SUMS-v2.1.0.txt` on the Release page and allow the app in **System Settings → Privacy & Security**.
+3. Builds are ad-hoc signed and not notarized by Apple. If Gatekeeper prompts on first launch, verify `SHA256SUMS-v2.2.0.txt` on the Release page and allow the app in **System Settings → Privacy & Security**.
 4. Bundle ID (`com.coverai.codex-notch-monitor`), executable name, preferences, and local data directories remain unchanged across upgrades from Codex Pulse.
 
 ---

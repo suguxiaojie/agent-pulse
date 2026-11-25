@@ -167,7 +167,58 @@ import Foundation
         assert(!runtime.enabled && runtime.rows.isEmpty && runtime.requests.isEmpty && runtime.limits == nil)
         assert(!installer.state().hasOwnedHooks)
         runtime.stop()
+        try await isolatedAccountRuntimeRegression(helper: helper)
         print("Claude runtime: disabled/start/tool/permission/deny/completion/new turn/disable/quota retention/replace/statusLine off passed")
+    }
+
+    @MainActor static func isolatedAccountRuntimeRegression(helper: URL) async throws {
+        let root = URL(fileURLWithPath: "/tmp/cpulse-iso-" + String(UUID().uuidString.prefix(8)))
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "test.claude.isolated." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let accountsRoot = root.appendingPathComponent("accounts", isDirectory: true)
+        let isolatedProject = accountsRoot.appendingPathComponent("9bd54e76e629402c9e43f5729915609c/claude/projects/proj", isDirectory: true)
+        try FileManager.default.createDirectory(at: isolatedProject, withIntermediateDirectories: true)
+        let transcript = isolatedProject.appendingPathComponent("iso-session.jsonl")
+        let now = Date()
+        let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let lines: [[String: Any]] = [
+            ["type": "user", "timestamp": formatter.string(from: now), "message": ["content": "统计独立账号 Token"]],
+            ["type": "assistant", "requestId": "req-iso-1", "timestamp": formatter.string(from: now.addingTimeInterval(1)),
+             "message": ["id": "msg-iso-1", "model": "claude-opus-5-5", "stop_reason": "end_turn",
+                         "content": [["type": "text", "text": "已完成统计"]],
+                         "usage": ["input_tokens": 1000, "output_tokens": 200, "cache_read_input_tokens": 500]]]
+        ]
+        var payload = Data()
+        for item in lines { payload.append(try JSONSerialization.data(withJSONObject: item)); payload.append(0x0A) }
+        try payload.write(to: transcript)
+
+        let installer = ClaudeCodeInstaller(
+            socketURL: root.appendingPathComponent("bridge.sock"),
+            authenticationToken: "iso-fixture",
+            configurationDirectory: root.appendingPathComponent("empty-global"),
+            supportDirectory: root.appendingPathComponent("support"),
+            helperURL: helper,
+            isolatedAccountsRootURL: accountsRoot
+        )
+        let runtime = ClaudeCodeRuntime(defaults: defaults, installer: installer)
+        runtime.start()
+        defer { runtime.stop() }
+        runtime.configure(enabled: true, approvals: false, statusLine: false)
+        try await wait { !runtime.configuring && runtime.enabled }
+        try await wait { runtime.usage?.lifetimeTokens == 1700 }
+        assert((runtime.usage?.days.first?.estimatedCost ?? 0) > 0, "isolated account cost calculated on enable")
+
+        let hookObj: [String: Any] = [
+            "session_id": "iso-session", "hook_event_name": "UserPromptSubmit",
+            "cwd": "/fixture", "transcript_path": transcript.path
+        ]
+        runtime.receive(.init(eventID: "iso-1", kind: "hook", awaitsDecision: false,
+            payload: try JSONSerialization.data(withJSONObject: hookObj)), receivedAt: now)
+        assert(runtime.rows.first?.sessionTotalTokens == 1700, "validTranscript accepts isolated account transcript_path")
+        assert(runtime.rows.first?.tokenUsage?.total == 1700, "live turn tokenUsage populated for isolated account")
     }
     @MainActor static func startupUsageRegression() async throws {
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)

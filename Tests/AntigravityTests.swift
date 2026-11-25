@@ -345,6 +345,40 @@ enum AntigravityCoreTests {
         let routineReadObj = try JSONSerialization.jsonObject(with: routineReadOut) as? [String: Any]
         expect(routineReadObj?["decision"] as? String == "allow", "workspace read_file passes through immediately")
 
+        // Legacy Antigravity (< 1.5.4) omits `hookEventName` and `cwd`: must infer `PreToolUse` / `Stop` and never emit `{}`!
+        let legacyPreOut = try runProcess(
+            executable: installer.installedHelperURL.path,
+            arguments: ["--antigravity-hook", "--configuration", installer.routeURL.path],
+            stdinData: try JSONSerialization.data(withJSONObject: [
+                "conversationId": "conv-legacy",
+                "workspacePaths": ["/Users/dev/My Project"],
+                "transcriptPath": "/Users/dev/.gemini/antigravity-cli/brain/conv-legacy/transcript.jsonl",
+                "stepIdx": 937,
+                "toolCall": ["name": "read_file", "args": ["Path": "ui-editorial-vertical/assets/apps.css"]]
+            ])
+        )
+        let legacyPreObj = try JSONSerialization.jsonObject(with: legacyPreOut) as? [String: Any]
+        expect(legacyPreObj?["decision"] as? String == "allow", "legacy <1.5.4 PreToolUse without hookEventName/cwd returns allow, never empty {}")
+
+        let explicitEventBrokenPreOut = try runProcess(
+            executable: installer.installedHelperURL.path,
+            arguments: ["--antigravity-hook", "--event", "PreToolUse", "--configuration", "/nonexistent/route.json"],
+            stdinData: Data("{}".utf8)
+        )
+        let explicitEventBrokenPreObj = try JSONSerialization.jsonObject(with: explicitEventBrokenPreOut) as? [String: Any]
+        expect(explicitEventBrokenPreObj?["decision"] as? String == "allow", "explicit --event PreToolUse with empty stdin fails safe to allow")
+
+        let legacyStopOut = try runProcess(
+            executable: installer.installedHelperURL.path,
+            arguments: ["--antigravity-hook", "--configuration", "/nonexistent/route.json"],
+            stdinData: Data("{\"conversationId\":\"conv-legacy\",\"terminationReason\":\"NO_TOOL_CALL\"}".utf8)
+        )
+        let legacyStopObj = try JSONSerialization.jsonObject(with: legacyStopOut) as? [String: Any]
+        expect(legacyStopObj?["decision"] as? String == "stop", "legacy <1.5.4 Stop without hookEventName fails safe to stop")
+
+        let preToolSpec = ((pulseHook?["PreToolUse"] as? [[String: Any]])?.first?["hooks"] as? [[String: Any]])?.first?["command"] as? String ?? ""
+        expect(preToolSpec.contains("--event PreToolUse"), "installed PreToolUse hook carries explicit --event PreToolUse")
+
         let captured = messageBox.snapshot()
         expect(captured.contains { $0.kind == "statusLine" } && captured.contains { $0.kind == "hook" }, "bridge received both statusLine and hook payloads")
         for item in captured where item.kind == "hook" {

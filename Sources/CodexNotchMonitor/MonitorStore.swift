@@ -96,6 +96,7 @@ final class MonitorStore: ObservableObject {
         didSet { UserDefaults.standard.set(notifyCreditExpiry, forKey: "notifyCreditExpiry") }
     }
     var onOpenNotificationCenter: (() -> Void)?
+    var onOpenCenterSection: ((MonitorCenterSection) -> Void)?
     private var signalNotificationLedger = TiboSignalNotificationLedger(
         observedIDs: UserDefaults.standard.stringArray(forKey: "notifiedTiboSignalIDs")
     )
@@ -103,6 +104,11 @@ final class MonitorStore: ObservableObject {
     private var creditExpiryLedger = CreditExpiryReminderLedger(
         data: UserDefaults.standard.data(forKey: "creditExpiryReminderLedger"))
     private var creditExpiryAccountGeneration = UUID()
+    private var providerQuotaResetLedger = ProviderQuotaResetLedger(
+        data: UserDefaults.standard.data(forKey: "providerQuotaResetLedger"))
+    private var providerResetCancellables: Set<AnyCancellable> = []
+    private var providerResetTimer: Timer?
+    private var providerResetWakeObserver: NSObjectProtocol?
     @Published private(set) var quotaNotificationStatus: QuotaNotificationStatus = .unknown
     @Published private(set) var codexSetupSnapshot: CodexSetupSnapshot?
     @Published private(set) var isSetupOnboardingComplete = false
@@ -522,6 +528,9 @@ final class MonitorStore: ObservableObject {
 
     func start() {
         quotaResetNotifier.onOpenCenter = { [weak self] in self?.onOpenNotificationCenter?() }
+        quotaResetNotifier.onOpenNotificationCenterID = { [weak self] notificationID in
+            self?.openCenter(forNotificationID: notificationID)
+        }
         quotaResetNotifier.onConfirmManual = { [weak self] notificationID in
             guard let self else { return }
             self.confirmNotificationRecovery(notificationID)
@@ -532,6 +541,7 @@ final class MonitorStore: ObservableObject {
         grok.start()
         antigravity.onRowsChanged = { [weak self] in self?.publishActivityRows() }
         antigravity.start()
+        startProviderQuotaResetTracking()
         do { try AppPaths.prepareDirectories() } catch { }
         observeCodexTerminationForSidebarCleanup()
         processPendingSidebarCleanups()
@@ -2712,11 +2722,155 @@ final class MonitorStore: ObservableObject {
 
     func performIslandAlertAction(_ action: SystemNotificationAction, alert: IslandAlert) {
         switch action {
-        case .openCenter: onOpenNotificationCenter?()
+        case .openCenter: openCenter(forNotificationID: alert.id)
         case .openSource:
             if let value = alert.sourceURL, let url = URL(string: value) { NSWorkspace.shared.open(url) }
         case .confirmManual: confirmNotificationRecovery(alert.id)
         case .none: break
+        }
+    }
+
+    private func openCenter(forNotificationID notificationID: String) {
+        let section: MonitorCenterSection
+        if notificationID.hasPrefix("provider-reset-claude-") {
+            section = .claude
+        } else if notificationID.hasPrefix("provider-reset-grok-") {
+            section = .grok
+        } else if notificationID.hasPrefix("provider-reset-antigravity-") {
+            section = .antigravity
+        } else {
+            onOpenNotificationCenter?()
+            return
+        }
+        if let onOpenCenterSection {
+            onOpenCenterSection(section)
+        } else {
+            onOpenNotificationCenter?()
+        }
+    }
+
+    private func startProviderQuotaResetTracking() {
+        providerResetCancellables.removeAll()
+        claude.$enabled.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] enabled in
+            if !enabled { self?.clearProviderQuotaReset(providerID: "claude") }
+        }.store(in: &providerResetCancellables)
+        claude.$limits.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] limits in
+            self?.observeClaudeQuotaLimits(limits)
+        }.store(in: &providerResetCancellables)
+
+        grok.$enabled.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] enabled in
+            if !enabled { self?.clearProviderQuotaReset(providerID: "grok") }
+        }.store(in: &providerResetCancellables)
+        grok.$quota.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] quota in
+            self?.observeGrokQuota(quota)
+        }.store(in: &providerResetCancellables)
+
+        antigravity.$enabled.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] enabled in
+            if !enabled { self?.clearProviderQuotaReset(providerID: "antigravity") }
+        }.store(in: &providerResetCancellables)
+        antigravity.$quota.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] quota in
+            self?.observeAntigravityQuota(quota)
+        }.store(in: &providerResetCancellables)
+
+        providerResetTimer?.invalidate()
+        providerResetTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.evaluateProviderQuotaResets() }
+        }
+        if let existingObserver = providerResetWakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(existingObserver)
+        }
+        providerResetWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.evaluateProviderQuotaResets() }
+        }
+    }
+
+    private func clearProviderQuotaReset(providerID: String) {
+        providerQuotaResetLedger.clear(providerID: providerID)
+        persistProviderQuotaResetLedger()
+    }
+
+    private func observeClaudeQuotaLimits(_ limits: ClaudeCodeRateLimits?) {
+        guard claude.enabled, claude.statusLineEnabled, let limits else { return }
+        var observations: [ProviderQuotaWindowObservation] = []
+        if let fiveHour = limits.fiveHour {
+            observations.append(ProviderQuotaWindowObservation(
+                providerID: "claude",
+                providerName: "Claude Code",
+                windowID: "five_hour",
+                windowTitle: "5 小时额度",
+                remainingPercent: fiveHour.remainingPercent,
+                resetsAt: fiveHour.resetsAt,
+                capturedAt: limits.capturedAt,
+                allowsMidCycleJump: false
+            ))
+        }
+        if let sevenDay = limits.sevenDay {
+            observations.append(ProviderQuotaWindowObservation(
+                providerID: "claude",
+                providerName: "Claude Code",
+                windowID: "seven_day",
+                windowTitle: "每周额度",
+                remainingPercent: sevenDay.remainingPercent,
+                resetsAt: sevenDay.resetsAt,
+                capturedAt: limits.capturedAt,
+                allowsMidCycleJump: false
+            ))
+        }
+        applyProviderQuotaObservations(observations)
+    }
+
+    private func observeGrokQuota(_ quota: GrokQuotaSnapshot?) {
+        guard grok.enabled, let quota else { return }
+        let observation = ProviderQuotaWindowObservation(
+            providerID: "grok",
+            providerName: "Grok CLI",
+            windowID: quota.periodType ?? "subscription",
+            windowTitle: quota.title,
+            remainingPercent: quota.remainingPercent,
+            resetsAt: quota.resetsAt,
+            capturedAt: quota.capturedAt,
+            allowsMidCycleJump: true
+        )
+        applyProviderQuotaObservations([observation])
+    }
+
+    private func observeAntigravityQuota(_ quota: AntigravityQuotaSnapshot?) {
+        guard antigravity.enabled, antigravity.statusLineEnabled, let quota else { return }
+        let observations = quota.windows.map { window in
+            ProviderQuotaWindowObservation(
+                providerID: "antigravity",
+                providerName: "Antigravity",
+                windowID: window.id,
+                windowTitle: window.title,
+                remainingPercent: window.remainingPercent,
+                resetsAt: window.resetsAt,
+                capturedAt: quota.capturedAt,
+                allowsMidCycleJump: true
+            )
+        }
+        applyProviderQuotaObservations(observations)
+    }
+
+    private func applyProviderQuotaObservations(_ observations: [ProviderQuotaWindowObservation]) {
+        guard !observations.isEmpty else { return }
+        let reminders = providerQuotaResetLedger.observe(observations, now: Date(), enabled: notifyQuotaRecovery)
+        persistProviderQuotaResetLedger()
+        reminders.forEach { sendQuotaNotification($0) }
+    }
+
+    private func evaluateProviderQuotaResets() {
+        let reminders = providerQuotaResetLedger.evaluateDueResets(now: Date(), enabled: notifyQuotaRecovery)
+        persistProviderQuotaResetLedger()
+        reminders.forEach { sendQuotaNotification($0) }
+    }
+
+    private func persistProviderQuotaResetLedger() {
+        if let data = providerQuotaResetLedger.data {
+            UserDefaults.standard.set(data, forKey: "providerQuotaResetLedger")
         }
     }
 
@@ -2845,8 +2999,12 @@ final class MonitorStore: ObservableObject {
 
     deinit {
         appUpdateTimer?.invalidate()
+        providerResetTimer?.invalidate()
         if let codexTerminationObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(codexTerminationObserver)
+        }
+        if let providerResetWakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(providerResetWakeObserver)
         }
     }
 }

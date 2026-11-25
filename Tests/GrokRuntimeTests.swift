@@ -44,6 +44,19 @@ struct GrokRuntimeTests {
         expect(ActivitySessionSnapshot.newlyCompleted(in: runtime.rows, previous: completed) == nil, "duplicate completion does not replay")
         runtime.consume(scan(turn), now: now.addingTimeInterval(62))
         expect(runtime.rows.isEmpty, "receipt expires after one minute")
+        var prePromptTurn = GrokTurnState(promptID: nil, phase: .working, startedAt: now.addingTimeInterval(62.5), updatedAt: now.addingTimeInterval(62.5))
+        runtime.consume(scan(prePromptTurn), now: now.addingTimeInterval(62.5))
+        expect(runtime.rows.count == 1 && runtime.rows.first?.phase == .working && runtime.rows.first?.turnID?.hasPrefix("pending-") == true,
+               "live turn before first thought chunk appears immediately with pending turn ID")
+        let prePromptRows = runtime.rows
+        prePromptTurn.promptID = "turn-promoted"; prePromptTurn.phase = .completed; prePromptTurn.updatedAt = now.addingTimeInterval(62.8); prePromptTurn.tokens = 120
+        runtime.consume(scan(prePromptTurn), now: now.addingTimeInterval(62.8))
+        expect(runtime.rows.count == 1 && runtime.rows.first?.turnID == "turn-promoted" && runtime.rows.first?.phase == .completed && runtime.rows.first?.suppressCompletion == false,
+               "pending turn promotes cleanly to authoritative prompt ID without ghost ended receipt")
+        expect(ActivitySessionSnapshot.newlyCompleted(in: runtime.rows, previous: prePromptRows) != nil,
+               "promoted pre-prompt turn triggers completion celebration")
+        runtime.consume(scan(prePromptTurn), now: now.addingTimeInterval(125))
+        expect(runtime.rows.isEmpty, "promoted turn receipt expires cleanly")
         turn.phase = .tool; turn.promptID = "turn3"; turn.steps = [.init(id: "tool", title: "Search", status: "pending")]
         runtime.consume(scan(turn), now: now.addingTimeInterval(63))
         expect(runtime.rows.first?.phase == .usingTool && runtime.rows.first?.recentSteps.first?.state == .running, "pending tool is not a fabricated approval")

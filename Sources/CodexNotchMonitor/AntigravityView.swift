@@ -74,10 +74,10 @@ struct AntigravityView: View {
             SettingsRowDivider()
             SettingsRow(
                 symbol: "point.3.connected.trianglepath.dotted",
-                title: "三端实时生命周期 Hook",
-                detail: "在 ~/.gemini/config/hooks.json 管理专属键，同时覆盖 2.0 桌面端、IDE 与 CLI。"
+                title: "实时任务状态",
+                detail: "同步 2.0 桌面端、IDE 与 CLI 的任务进度。"
             ) {
-                Toggle("三端实时 Hook", isOn: Binding(
+                Toggle("实时任务状态", isOn: Binding(
                     get: { runtime.hooksEnabled },
                     set: { runtime.configure(enabled: true, hooks: $0, approvals: runtime.approvalsEnabled, statusLine: runtime.statusLineEnabled) }
                 ))
@@ -89,7 +89,7 @@ struct AntigravityView: View {
             SettingsRow(
                 symbol: "checkmark.shield",
                 title: "灵动岛审批与提问回答",
-                detail: "在灵动岛直接回答 ask_question 多选／输入提问，并对需要审查的工具调用执行「批准一次／拒绝」；超时或失联自动交回原客户端处理。"
+                detail: "在灵动岛回答提问或确认操作，未处理时自动交回原客户端。"
             ) {
                 Toggle("灵动岛审批与提问", isOn: Binding(
                     get: { runtime.approvalsEnabled },
@@ -103,7 +103,7 @@ struct AntigravityView: View {
             SettingsRow(
                 symbol: "gauge.with.dots.needle.50percent",
                 title: "CLI 官方额度与 AI Credits",
-                detail: "通过 agy 状态栏采集多模型池剩余比例与 AI Credits，原样转发原有状态栏输出。"
+                detail: "从 agy 同步官方剩余额度与 AI Credits，不影响原有状态栏。"
             ) {
                 Toggle("采集官方额度", isOn: Binding(
                     get: { runtime.statusLineEnabled },
@@ -113,7 +113,7 @@ struct AntigravityView: View {
                 .toggleStyle(PanelSettingsToggleStyle(onTitle: "开启", offTitle: "关闭"))
                 .disabled(!runtime.enabled || runtime.configuring)
             }
-            Text("首次启用前自动备份 hooks.json 与 settings.json，仅管理 Pulse 自己的配置项；停用完整恢复原状态栏并移除专属 Hook。不读取账号凭据或邮箱；绝不静默自动批准，失联／超时自动放行回原客户端确认。")
+            Text("启用前自动备份原配置，停用自动还原；不读取账号凭据。")
                 .font(MonitorDesktopTypography.metadata)
                 .foregroundStyle(MonitorDesktopTheme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -143,21 +143,22 @@ struct AntigravityView: View {
                     if let credits = runtime.quota?.aiCredits, runtime.statusLineEnabled, !stale {
                         MonitorMetaChip("AI Credits \(credits)")
                     }
-                    Button(runtime.scanning ? "刷新中…" : "刷新") { runtime.refresh() }
-                        .buttonStyle(PanelSettingsActionStyle())
-                        .disabled(runtime.scanning)
+                    MonitorRefreshButton(title: "刷新", loadingTitle: "刷新中", isRefreshing: runtime.scanning) {
+                        runtime.refresh()
+                    }
+                    .accessibilityLabel("刷新 Antigravity 额度")
                 }
             }
 
             if !runtime.statusLineEnabled {
-                Text("开启「CLI 官方额度与 AI Credits」并在 agy 中对话后即可同步真实配额。")
+                Text("开启上方「CLI 官方额度与 AI Credits」并在 agy 中对话后即可同步。")
                     .font(MonitorDesktopTypography.metadata)
                     .foregroundStyle(MonitorDesktopTheme.secondaryText)
             } else if activeWindows.isEmpty {
                 MonitorCenterEmptyState(
                     symbol: "gauge.with.dots.needle.50percent",
-                    title: "等待状态栏同步官方额度",
-                    detail: "下次在 agy CLI 中运行对话时，状态栏会自动将当前套餐配额与 AI Credits 同步至 Pulse。"
+                    title: "等待同步官方额度",
+                    detail: "下次在 agy CLI 中运行对话时会自动同步当前额度与 AI Credits。"
                 )
             } else {
                 HStack(alignment: .top, spacing: 14) {
@@ -191,8 +192,8 @@ struct AntigravityView: View {
                     if let captured = runtime.quota?.capturedAt {
                         Text((stale ? "上次观测，非当前 · " : "观测于 ") + captured.formatted(date: .omitted, time: .shortened))
                     }
-                    if let useCredits = runtime.quota?.useG1Credits {
-                        Text(useCredits ? "AI Credits 超额兜底已开启" : "AI Credits 超额兜底未开启")
+                    if runtime.quota?.useG1Credits == true {
+                        Text("超额自动使用 AI Credits")
                     }
                 }
                 .font(MonitorDesktopTypography.metadata)
@@ -225,8 +226,8 @@ struct AntigravityView: View {
             if history.isEmpty {
                 MonitorCenterEmptyState(
                     symbol: "chart.bar",
-                    title: runtime.usage == nil ? "正在扫描本机记录…" : "所选周期内没有 Antigravity 用量记录",
-                    detail: "自动聚合 ~/.gemini 下 Antigravity 2.0、IDE 与 CLI 的本地转录。"
+                    title: runtime.usage == nil ? "正在读取本机记录…" : "所选周期内暂无用量记录",
+                    detail: "在 Antigravity 中发起对话后会自动统计本机用量。"
                 )
             } else {
                 Chart(history, id: \.date) { day in
@@ -240,11 +241,10 @@ struct AntigravityView: View {
                 .frame(height: 150)
             }
 
-            let unpricedNote: String = {
-                guard let models = runtime.usage?.unpricedModels, !models.isEmpty else { return "" }
-                return "未公开单价或未标明模型的记录（如 \(models.prefix(3).joined(separator: "、"))）保留金额下界，不按 $0 计入。"
-            }()
-            Text("按输入 + 缓存读取 + 输出统计三端真实 Token；成本仅对公开标准费率模型折算，非 Google AI 订阅账单。" + unpricedNote)
+            let unpricedNote = (runtime.usage?.unpricedModels.isEmpty == false)
+                ? "部分模型暂无公开单价，金额显示为已知下界。"
+                : ""
+            Text("成本按公开 API 费率估算，非订阅账单。" + unpricedNote)
                 .font(MonitorDesktopTypography.metadata)
                 .foregroundStyle(MonitorDesktopTheme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -268,8 +268,8 @@ struct AntigravityView: View {
             if runtime.rows.isEmpty {
                 MonitorCenterEmptyState(
                     symbol: "bolt.horizontal.circle",
-                    title: "当前没有已确认的活动任务",
-                    detail: "通过进程文件锁、生命周期 Hook 与本地转录核对 2.0 桌面端、IDE 与 CLI 的运行任务。"
+                    title: "暂无运行中的任务",
+                    detail: "在 Antigravity 中发起任务后，会在此与灵动岛同步显示。"
                 )
             } else {
                 ForEach(Array(runtime.rows.enumerated()), id: \.element.id) { index, row in

@@ -30,6 +30,7 @@ final class GrokRuntime: ObservableObject {
     private var sharedStatus = "等待下次正常启动 Grok，自动接入新请求"
     var sharedSocketURL: URL { GrokLauncher.sharedSocket(home: home) }
     private var timer: AnyCancellable?
+    private var wakeCancellable: AnyCancellable?
     private var billingTask: Task<Void, Never>?
     private var scanTask: Task<Void, Never>?
     private var client: GrokBillingClient?
@@ -51,10 +52,22 @@ final class GrokRuntime: ObservableObject {
         refreshAutomaticStatus()
         syncSharedClients()
         refresh()
-        timer = Timer.publish(every: 2, on: .main, in: .common).autoconnect().sink { [weak self] _ in
+        wakeCancellable = NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.didWakeNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self, self.enabled else { return }
+                self.lastQuotaAttempt = .distantPast
+                self.refresh()
+            }
+        timer = Timer.publish(every: 2, on: .main, in: .common).autoconnect().sink { [weak self] now in
             guard let self else { return }
             self.refreshActivity()
-            if Date().timeIntervalSince(self.lastQuotaAttempt) >= 60 { self.refreshQuota() }
+            let needsFastRetry = self.quota == nil
+                || self.quotaFailed
+                || self.quota?.isAvailable(at: now) != true
+            let interval: TimeInterval = needsFastRetry ? 15 : 60
+            if now.timeIntervalSince(self.lastQuotaAttempt) >= interval { self.refreshQuota() }
         }
     }
     func configure(enabled: Bool) {
@@ -63,7 +76,7 @@ final class GrokRuntime: ObservableObject {
         generation += 1
         if enabled { start() }
         else {
-            timer = nil; client?.cancel(); billingTask?.cancel(); billingTask = nil
+            timer = nil; wakeCancellable = nil; client?.cancel(); billingTask?.cancel(); billingTask = nil
             scanTask?.cancel(); scanTask = nil; refreshing = false
             quota = nil; usage = nil; rows = []; receipts = [:]; observedTurns = []
             stopSharedClients(); questions = []; submittedQuestions = []; lastScan = nil
@@ -72,6 +85,14 @@ final class GrokRuntime: ObservableObject {
         }
     }
     func refresh() { refreshQuota(); refreshActivity() }
+    func refreshIfNeeded(now: Date = Date()) {
+        guard enabled else { return }
+        refreshActivity()
+        let displayNow = GrokDisplayClock.now(sampled: now)
+        if quota == nil || quotaFailed || quota?.isAvailable(at: displayNow) != true || quota?.isStale(at: displayNow) == true {
+            refreshQuota()
+        }
+    }
     /// `socket` is nil only for the default leader; a client that was already removed cannot publish again.
     func consumeShared(_ snapshot: GrokSharedClient.Snapshot, from socket: String? = nil) {
         let path = socket ?? sharedSocketURL.path
@@ -153,13 +174,14 @@ final class GrokRuntime: ObservableObject {
     }
     func stop() {
         stopSharedClients()
-        generation += 1; timer = nil; client?.cancel(); billingTask?.cancel(); scanTask?.cancel()
+        generation += 1; timer = nil; wakeCancellable = nil; client?.cancel(); billingTask?.cancel(); scanTask?.cancel()
         billingTask = nil; scanTask = nil; refreshing = false
     }
     func refreshQuota() {
         guard enabled, billingTask == nil else { return }
         lastQuotaAttempt = Date()
-        guard let executable = GrokBillingClient.executable(home: home) else {
+        let executables = GrokBillingClient.executables(home: home)
+        guard !executables.isEmpty else {
             quota = nil; quotaFailed = true; quotaStatus = GrokBillingClient.Failure.missingCLI.title; return
         }
         refreshing = true
@@ -168,7 +190,7 @@ final class GrokRuntime: ObservableObject {
         client = worker
         billingTask = Task { [weak self] in
             let result = await Task.detached(priority: .utility) { () -> Result<GrokQuotaSnapshot, Error> in
-                Result { try worker.fetch(executable: executable, home: home) }
+                Result { try worker.fetch(executables: executables, home: home) }
             }.value
             guard let self, self.enabled, self.generation == version else { return }
             self.refreshing = false; self.billingTask = nil; self.client = nil
@@ -215,9 +237,20 @@ final class GrokRuntime: ObservableObject {
         for session in scan.sessions where session.caughtUp {
             let t = session.turn
             let question = questions.first { $0.sessionID == session.id && (t.promptID == nil || t.promptID == $0.turnID) }
-            guard let prompt = question?.turnID ?? t.promptID, t.phase != .idle || question != nil else { continue }
+            guard let prompt = question?.turnID ?? t.effectivePromptID, t.phase != .idle || question != nil else { continue }
             let id = "grok:" + session.id, key = id + ":" + prompt
-            let previous = rows.first { $0.id == id && $0.turnID == prompt }
+            let exactPrevious = rows.first { $0.id == id && $0.turnID == prompt }
+            let pendingPrevious = (exactPrevious == nil && t.promptID != nil)
+                ? rows.first { $0.id == id && ($0.turnID?.hasPrefix("pending-") == true) && $0.phase.isActive }
+                : nil
+            if let pendingTurnID = pendingPrevious?.turnID {
+                let pendingKey = id + ":" + pendingTurnID
+                if observedTurns.remove(pendingKey) != nil {
+                    observedTurns.insert(key)
+                }
+                receipts.removeValue(forKey: pendingKey)
+            }
+            let previous = exactPrevious ?? pendingPrevious
             let live = scan.liveIDs.contains(session.id)
             guard question != nil || (live && t.active) || previous?.phase.isActive == true || receipts[key] != nil else { continue }
             var phase: TaskPhase
@@ -247,7 +280,7 @@ final class GrokRuntime: ObservableObject {
             else if receipts[key] == nil { receipts[key] = row }
             if end == nil { next.append(row) }
         }
-        for old in rows where old.phase.isActive && !next.contains(where: { $0.id == old.id }) {
+        for old in rows where old.phase.isActive && !next.contains(where: { $0.id == old.id }) && !receipts.values.contains(where: { $0.id == old.id }) {
             let key = old.id + ":" + (old.turnID ?? "")
             if receipts[key] == nil {
                 var ended = old; ended.phase = .ended; ended.endReason = .ended; ended.updatedAt = now
@@ -261,5 +294,5 @@ final class GrokRuntime: ObservableObject {
         if observedTurns.count > 1024 { observedTurns = Set(next.map { $0.id + ":" + ($0.turnID ?? "") }) }
         if rows != next { rows = next; onRowsChanged?() }
     }
-    deinit { sharedClients.values.forEach { $0.stop() }; timer?.cancel(); client?.cancel(); billingTask?.cancel(); scanTask?.cancel() }
+    deinit { sharedClients.values.forEach { $0.stop() }; timer?.cancel(); wakeCancellable?.cancel(); client?.cancel(); billingTask?.cancel(); scanTask?.cancel() }
 }

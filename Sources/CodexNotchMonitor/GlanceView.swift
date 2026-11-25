@@ -129,6 +129,12 @@ struct GlanceView: View {
         .environment(\.glanceTextShadow, colorScheme == .dark && surfaceOpacity < 0.30 && !reduceTransparency && contrast != .increased)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: primaryRemaining)
         .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { now = $0 }
+        .onReceive(NotificationCenter.default.publisher(for: .glancePresentationDidChange)) { note in
+            guard (note.object as? Bool) == true else { return }
+            let current = Date()
+            now = current
+            refreshProvidersOnPresent(at: current)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .glanceKeyboardNavigate)) { note in
             guard page == .summary,
                   !store.isConsumingQuotaResetCredit,
@@ -168,13 +174,15 @@ struct GlanceView: View {
         .onChange(of: antigravity.scanning) { busy in
             if provider == .antigravity && !busy && refreshVisualState == .refreshing { finishManualRefresh() }
         }
-        .onChange(of: provider) { _ in
+        .onChange(of: provider) { next in
             page = .summary
             showsResetConfirmation = false
             refreshStartedAt = .distantPast
             refreshVisualState = .idle
             refreshRotation = 0
-            now = Date()
+            let current = Date()
+            now = current
+            if next == .grok { grok.refreshIfNeeded(now: current) }
         }
         .onChange(of: claude.usage?.updatedAt) { date in
             if provider == .claude, let date, date >= refreshStartedAt, refreshVisualState == .refreshing {
@@ -967,6 +975,22 @@ struct GlanceView: View {
                   refreshStartedAt == startedAt
             else { return }
             finishManualRefresh()
+        }
+    }
+
+    private func refreshProvidersOnPresent(at current: Date) {
+        if grok.enabled {
+            grok.refreshIfNeeded(now: current)
+        }
+        if antigravity.enabled,
+           antigravity.usage == nil || (antigravity.quota?.isStale(at: current, threshold: AntigravityQuotaSnapshot.uiStaleThreshold) ?? false) {
+            antigravity.refresh()
+        }
+        if claude.enabled {
+            claude.refreshUsageIfNeeded(now: current)
+        }
+        if case .failed = store.quotaState {
+            store.refreshQuota()
         }
     }
 

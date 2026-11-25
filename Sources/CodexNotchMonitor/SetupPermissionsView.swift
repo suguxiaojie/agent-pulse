@@ -29,7 +29,7 @@ struct SetupPermissionsView: View {
                 }.modifier(MonitorDesktopReveal(delay: 0))
                 if !store.isSetupOnboardingComplete { onboarding.modifier(MonitorDesktopReveal(delay: 0.04)) }
                 PanelSettingsGroup(title: "权限与连接", symbol: "checkmark.shield") {
-                    SettingsRow(symbol: "point.3.connected.trianglepath.dotted", title: "原生任务监控", detail: "通过桌面 IPC 与本地日志自动观察任务；批准和回答请在 Codex 中操作。") {
+                    SettingsRow(symbol: "point.3.connected.trianglepath.dotted", title: "原生任务监控", detail: "自动同步本机 Codex 任务进度，支持在灵动岛直接查看与回复。") {
                         HStack(spacing: 6) {
                             Text(store.nativeActivityStatus)
                                 .foregroundStyle(PanelSettingsTheme.secondary).monospacedDigit()
@@ -80,18 +80,18 @@ struct SetupPermissionsView: View {
                             .accessibilityLabel("关注信号提醒")
                     }
                     SettingsRowDivider()
-                    SettingsRow(symbol: "arrow.counterclockwise", title: "额度恢复提醒", detail: "额度恢复立即提醒，原因确认后静音更新。") {
+                    SettingsRow(symbol: "arrow.counterclockwise", title: "额度恢复提醒", detail: "Codex、Claude、Grok 与 Antigravity 消耗至 80% 及以下后，到点重置或恢复时提醒。") {
                         Toggle("额度恢复提醒", isOn: $store.notifyQuotaRecovery)
                             .labelsHidden()
                             .toggleStyle(PanelSettingsToggleStyle(onTitle: "开启", offTitle: "关闭"))
                             .accessibilityLabel("额度恢复提醒")
                     }
                     SettingsRowDivider()
-                    SettingsRow(symbol: "clock.badge.exclamationmark", title: "重置卡到期提醒", detail: "应用运行时，在到期前 24、12、6 小时分别提醒。") {
-                        Toggle("重置卡到期提醒", isOn: $store.notifyCreditExpiry)
+                    SettingsRow(symbol: "clock.badge.exclamationmark", title: "Codex 重置卡到期提醒", detail: "应用运行时，在 Codex 重置卡到期前 24、12、6 小时分别提醒。") {
+                        Toggle("Codex 重置卡到期提醒", isOn: $store.notifyCreditExpiry)
                             .labelsHidden()
                             .toggleStyle(PanelSettingsToggleStyle(onTitle: "开启", offTitle: "关闭"))
-                            .accessibilityLabel("重置卡到期提醒")
+                            .accessibilityLabel("Codex 重置卡到期提醒")
                     }
                 }.modifier(MonitorDesktopReveal(delay: 0.08))
                 PanelSettingsGroup(title: "应用更新", symbol: "arrow.triangle.2.circlepath") {
@@ -135,8 +135,7 @@ struct SetupPermissionsView: View {
                 .textSelection(.enabled)
             Text("Antigravity：" + store.antigravity.installation.summaryText)
                 .textSelection(.enabled)
-            Text("任务状态通过本机桌面 IPC 获取，断线时回退本地日志。批准、回答和消息仍在原客户端操作。")
-            Text("可运行真实任务核对灵动岛状态；任务结束后保留额度／空闲横幅。")
+            Text("任务状态优先通过本机实时连接获取，断线时自动回退至本地日志。")
         }
         .foregroundStyle(PanelSettingsTheme.secondary)
         .modifier(MonitorPopoverSurface()).frame(width: 320, alignment: .leading)
@@ -203,7 +202,7 @@ struct SetupPermissionsView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(titles[onboardingStep]).font(MonitorDesktopTypography.cardTitle).accessibilityAddTraits(.isHeader)
                     Text(onboardingStep == 0 ? "监控当前账号额度、本机用量与任务状态。会话与用量在本机处理。" : onboardingStep == 1
-                         ? "请安装并运行 Codex。桌面连接和本地日志会自动提供任务状态。"
+                         ? "启动 Codex 后会自动同步任务状态与用量。"
                          : "通知可按需开启，也可以稍后在此页面设置。")
                         .font(.system(size: 13)).foregroundStyle(PanelSettingsTheme.secondary)
                         .fixedSize(horizontal: false, vertical: true)

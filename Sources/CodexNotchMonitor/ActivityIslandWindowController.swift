@@ -24,6 +24,7 @@ final class ActivityIslandWindowController: NSObject {
     private var manualFocusID: String?
     private var compactReceiptClose: DispatchWorkItem?
     private var compactStatisticTick: DispatchWorkItem?
+    private var persistedLastFinishedAt: Date = .distantPast
     var onOpenSettings: (() -> Void)?
 
     init(store: MonitorStore) {
@@ -130,9 +131,36 @@ final class ActivityIslandWindowController: NSObject {
         }
         model.onOpenUsage = { [weak self] in
             guard let self else { return }
+            let target = self.model.presentation == .expanded ? self.model.expandedQuotaProvider : self.model.activeQuotaProvider
+            self.model.selectUsageProvider(target)
             self.model.showsUsagePage = true
+            if self.store.grok.enabled { self.store.grok.refreshIfNeeded() }
+            if self.store.claude.enabled { self.store.claude.refreshUsageIfNeeded() }
+            if self.store.antigravity.enabled && self.store.antigravity.usage == nil { self.store.antigravity.refresh() }
             self.handle(.expandRequested); self.rescheduleTransitions()
         }
+        model.$usageProvider.dropFirst().removeDuplicates().receive(on: RunLoop.main).sink { [weak self] provider in
+            guard let self else { return }
+            UserDefaults.standard.set(provider.rawValue, forKey: "island.usageProvider")
+            if provider == .grok { self.store.grok.refreshIfNeeded() }
+            else if provider == .claude { self.store.claude.refreshUsageIfNeeded() }
+            else if provider == .antigravity && self.store.antigravity.enabled && self.store.antigravity.usage == nil {
+                self.store.antigravity.refresh()
+            }
+        }.store(in: &cancellables)
+        model.$idleProvider.dropFirst().removeDuplicates().receive(on: RunLoop.main).sink { [weak self] provider in
+            guard let self else { return }
+            UserDefaults.standard.set(provider.rawValue, forKey: "island.lastFinishedProvider")
+            let ts = self.model.lastFinishedTimestamp
+            if ts > Date(timeIntervalSince1970: 0) {
+                UserDefaults.standard.set(ts.timeIntervalSince1970, forKey: "island.lastFinishedAt")
+            }
+            if provider == .grok { self.store.grok.refreshIfNeeded() }
+            else if provider == .claude { self.store.claude.refreshUsageIfNeeded() }
+            else if provider == .antigravity && self.store.antigravity.enabled && self.store.antigravity.quota == nil {
+                self.store.antigravity.refresh()
+            }
+        }.store(in: &cancellables)
         model.onBackToTasks = { [weak self] in
             guard let self else { return }
             self.model.showsUsagePage = false
@@ -185,6 +213,17 @@ final class ActivityIslandWindowController: NSObject {
         store.antigravity.$statusLineEnabled.removeDuplicates().sink { [weak self] in self?.model.antigravityStatusLineEnabled = $0 }.store(in: &cancellables)
         store.antigravity.$quota.sink { [weak self] in self?.model.antigravityQuota = $0 }.store(in: &cancellables)
         store.antigravity.$usage.sink { [weak self] in self?.model.antigravityUsage = $0 }.store(in: &cancellables)
+        if let saved = UserDefaults.standard.string(forKey: "island.usageProvider"),
+           let restored = IslandUsageProvider(rawValue: saved) {
+            model.selectUsageProvider(restored)
+        }
+        if let savedIdle = UserDefaults.standard.string(forKey: "island.lastFinishedProvider"),
+           let restoredIdle = IslandUsageProvider(rawValue: savedIdle) {
+            let savedAt = UserDefaults.standard.double(forKey: "island.lastFinishedAt")
+            let finishedAt = savedAt > 0 ? Date(timeIntervalSince1970: savedAt) : Date(timeIntervalSince1970: 0)
+            model.restoreIdleProvider(restoredIdle, finishedAt: finishedAt)
+            persistedLastFinishedAt = finishedAt
+        }
         store.$costSnapshot.sink { [weak self] in self?.model.usageCost = $0 }.store(in: &cancellables)
         store.$accountUsage.sink { [weak self] in self?.model.accountUsage = $0 }.store(in: &cancellables)
         store.$quotaResetCredits.sink { [weak self] in self?.model.resetCredits = $0 }.store(in: &cancellables)
@@ -348,6 +387,12 @@ final class ActivityIslandWindowController: NSObject {
             model.focusedSessionID = nil; clearCompactReceipt()
             model.showsCompletedStatistic = false; terminalIdentity = nil
             handle(.becameIdle); rescheduleTransitions()
+        }
+        if model.lastFinishedTimestamp > persistedLastFinishedAt,
+           model.lastFinishedTimestamp > Date(timeIntervalSince1970: 0) {
+            persistedLastFinishedAt = model.lastFinishedTimestamp
+            UserDefaults.standard.set(model.idleProvider.rawValue, forKey: "island.lastFinishedProvider")
+            UserDefaults.standard.set(model.lastFinishedTimestamp.timeIntervalSince1970, forKey: "island.lastFinishedAt")
         }
     }
     private func snapshot(for row: ActivitySessionSnapshot, rows: [ActivitySessionSnapshot]) -> ActivityIslandSnapshot {

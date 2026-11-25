@@ -476,11 +476,243 @@ enum AntigravityRuntimeTests {
             "hookEventName": "PostInvocation",
             "conversationId": "live-hook-order"
         ])
+        let beforeHookStop = runtime.rows
         runtime.receive(.init(eventID: "ho-2", kind: "hook", awaitsDecision: false, payload: stopOrderPayload), receivedAt: hookTurnStart.addingTimeInterval(10))
+        expect(ActivitySessionSnapshot.newlyCompleted(in: runtime.rows, previous: beforeHookStop)?.id == "agy:live-hook-order",
+               "hook-only turn transitioning PreInvocation -> Stop(NO_TOOL_CALL) immediately triggers completion confetti")
         runtime.receive(.init(eventID: "ho-3", kind: "hook", awaitsDecision: false, payload: latePostOrderPayload), receivedAt: hookTurnStart.addingTimeInterval(10.002))
         expect(!runtime.rows.contains(where: { $0.id == "agy:live-hook-order" && $0.phase.isActive }),
                "late PostInvocation after Stop never revives active working state")
         let _ = (stopHookPayload, latePostPayload)
+
+        // 3d. Regression for delayed confetti bug:
+        // (i) PLANNER_RESPONSE.created_at is invocation START time (e.g. 20s before completion), while statusLine("working")
+        //     and PostInvocation carry newer wall-clock timestamps -> transcript .completed MUST still trigger confetti immediately at task end!
+        // (ii) Starting Task 2 (PreInvocation / statusLine("working") + stray idle flicker) while lastScan still holds Task 1's completed turnID
+        //      MUST NEVER resurrect Task 1's turnID or fire confetti when Task 2 starts!
+        let confettiT0 = hookTurnStart.addingTimeInterval(300)
+        let confettiStartScan = AntigravityScanResult(
+            usage: historicalScan.usage,
+            sessions: [
+                AntigravitySessionRecord(
+                    id: "live-confetti",
+                    surface: .cli,
+                    cwd: "/Users/dev/PulseProject",
+                    title: "Antigravity Confetti Timing",
+                    model: "gemini-4-neon-xhigh",
+                    totalTokens: 10_000,
+                    isSubagent: false,
+                    isLockedLive: true,
+                    summaryBusy: true,
+                    summaryStatus: .running,
+                    caughtUp: true,
+                    turn: .init(
+                        turnID: "step-100",
+                        phase: .working,
+                        startedAt: confettiT0,
+                        updatedAt: confettiT0.addingTimeInterval(2),
+                        tokens: 10_000,
+                        text: "分析代码",
+                        steps: []
+                    )
+                )
+            ]
+        )
+        runtime.consume(confettiStartScan, now: confettiT0.addingTimeInterval(2))
+        // Simulate statusLine("working") + PostInvocation arriving during final model streaming at T0+25s,
+        // AFTER PLANNER_RESPONSE.created_at (T0+5s)!
+        let workingStatusPayload = try JSONSerialization.data(withJSONObject: [
+            "session_id": "live-confetti",
+            "agent_state": "working",
+            "capturedAt": confettiT0.addingTimeInterval(24).timeIntervalSince1970
+        ])
+        runtime.receive(.init(eventID: "cf-sl-1", kind: "statusLine", awaitsDecision: false, payload: workingStatusPayload),
+                        receivedAt: confettiT0.addingTimeInterval(24))
+        let postInvConfettiPayload = try JSONSerialization.data(withJSONObject: [
+            "hookEventName": "PostInvocation",
+            "conversationId": "live-confetti"
+        ])
+        runtime.receive(.init(eventID: "cf-post-1", kind: "hook", awaitsDecision: false, payload: postInvConfettiPayload),
+                        receivedAt: confettiT0.addingTimeInterval(25))
+        expect(runtime.rows.first(where: { $0.id == "agy:live-confetti" })?.phase == .working,
+               "confetti test turn is active while streaming")
+
+        // Transcript flushes PLANNER_RESPONSE(DONE, tools=0) with created_at = T0+5s (20s older than overlay.updatedAt = T0+25s!)
+        let confettiDoneScan = AntigravityScanResult(
+            usage: historicalScan.usage,
+            sessions: [
+                AntigravitySessionRecord(
+                    id: "live-confetti",
+                    surface: .cli,
+                    cwd: "/Users/dev/PulseProject",
+                    title: "Antigravity Confetti Timing",
+                    model: "gemini-4-neon-xhigh",
+                    totalTokens: 15_000,
+                    isSubagent: false,
+                    isLockedLive: true,
+                    summaryBusy: false,
+                    summaryStatus: .idle(modifiedAt: confettiT0.addingTimeInterval(25.2)),
+                    caughtUp: true,
+                    turn: .init(
+                        turnID: "step-100",
+                        phase: .completed,
+                        startedAt: confettiT0,
+                        updatedAt: confettiT0.addingTimeInterval(5), // invocation START time!
+                        transcriptModifiedAt: confettiT0.addingTimeInterval(25.1),
+                        tokens: 15_000,
+                        text: "任务已完成",
+                        steps: []
+                    )
+                )
+            ]
+        )
+        let beforeTask1End = runtime.rows
+        runtime.consume(confettiDoneScan, now: confettiT0.addingTimeInterval(25.5))
+        expect(ActivitySessionSnapshot.newlyCompleted(in: runtime.rows, previous: beforeTask1End)?.id == "agy:live-confetti",
+               "task 1 triggers completion confetti IMMEDIATELY at task end despite older PLANNER_RESPONSE.created_at and newer statusLine/PostInvocation")
+        expect(runtime.rows.first(where: { $0.id == "agy:live-confetti" })?.phase == .completed,
+               "task 1 enters completed receipt immediately rather than staying stuck in working")
+
+        // Let Task 1 receipt expire (65s later), while lastScan STILL holds Task 1 (step-100, .completed)
+        runtime.consume(confettiDoneScan, now: confettiT0.addingTimeInterval(95))
+        expect(!runtime.rows.contains(where: { $0.id == "agy:live-confetti" }),
+               "task 1 receipt expired after 60s")
+
+        // User now submits Task 2 at T0+120s while lastScan STILL holds Task 1's completed turn!
+        let task2Start = confettiT0.addingTimeInterval(120)
+        let preInvTask2 = try JSONSerialization.data(withJSONObject: [
+            "hookEventName": "PreInvocation",
+            "conversationId": "live-confetti",
+            "invocationNum": 1,
+            "cwd": "/Users/dev/PulseProject",
+            "lastUserInput": "发起第二个任务"
+        ])
+        let beforeTask2Start = runtime.rows
+        runtime.receive(.init(eventID: "cf-pre-2", kind: "hook", awaitsDecision: false, payload: preInvTask2),
+                        receivedAt: task2Start)
+        let task2ActiveRow = runtime.rows.first(where: { $0.id == "agy:live-confetti" })
+        expect(task2ActiveRow?.phase == .working && task2ActiveRow?.turnID?.hasPrefix("hook-") == true,
+               "task 2 starting before transcript scan uses a fresh hook-* turnID instead of recycling Task 1's completed step-100")
+        expect(ActivitySessionSnapshot.newlyCompleted(in: runtime.rows, previous: beforeTask2Start) == nil,
+               "starting task 2 never triggers confetti")
+
+        // Even if a stray statusLine("idle") flickers 50ms after Task 2 starts (before transcript scans Task 2),
+        // Task 1 MUST NOT resurface as .completed or fire fake confetti!
+        let strayIdlePayload = try JSONSerialization.data(withJSONObject: [
+            "session_id": "live-confetti",
+            "agent_state": "idle",
+            "capturedAt": task2Start.addingTimeInterval(0.05).timeIntervalSince1970
+        ])
+        let beforeStrayIdle = runtime.rows
+        runtime.receive(.init(eventID: "cf-idle-2", kind: "statusLine", awaitsDecision: false, payload: strayIdlePayload),
+                        receivedAt: task2Start.addingTimeInterval(0.05))
+        expect(ActivitySessionSnapshot.newlyCompleted(in: runtime.rows, previous: beforeStrayIdle) == nil,
+               "stray idle statusLine during task 2 startup never resurrects task 1 to fire fake confetti")
+
+        // Task 2 starts cleanly again via PreInvocation, then completes quickly via transcript ("hook-*" -> "step-105")
+        let preInvTask2b = try JSONSerialization.data(withJSONObject: [
+            "hookEventName": "PreInvocation",
+            "conversationId": "live-confetti",
+            "invocationNum": 1,
+            "cwd": "/Users/dev/PulseProject",
+            "lastUserInput": "快速第二个任务"
+        ])
+        runtime.receive(.init(eventID: "cf-pre-2b", kind: "hook", awaitsDecision: false, payload: preInvTask2b),
+                        receivedAt: task2Start.addingTimeInterval(2))
+        let beforeFastTask2Done = runtime.rows
+        let fastTask2DoneScan = AntigravityScanResult(
+            usage: historicalScan.usage,
+            sessions: [
+                AntigravitySessionRecord(
+                    id: "live-confetti",
+                    surface: .cli,
+                    cwd: "/Users/dev/PulseProject",
+                    title: "Antigravity Confetti Timing",
+                    model: "gemini-4-neon-xhigh",
+                    totalTokens: 17_000,
+                    isSubagent: false,
+                    isLockedLive: true,
+                    summaryBusy: false,
+                    summaryStatus: .idle(modifiedAt: task2Start.addingTimeInterval(4)),
+                    caughtUp: true,
+                    turn: .init(
+                        turnID: "step-105",
+                        phase: .completed,
+                        startedAt: task2Start.addingTimeInterval(2),
+                        updatedAt: task2Start.addingTimeInterval(2.5),
+                        transcriptModifiedAt: task2Start.addingTimeInterval(4),
+                        tokens: 2_000,
+                        text: "快速任务已完成",
+                        steps: []
+                    )
+                )
+            ]
+        )
+        runtime.consume(fastTask2DoneScan, now: task2Start.addingTimeInterval(4.1))
+        expect(ActivitySessionSnapshot.newlyCompleted(in: runtime.rows, previous: beforeFastTask2Done)?.turnID == "step-105",
+               "fast turn promoted from hook-* directly to completed step-* still fires confetti at task end")
+
+        // Stale statusLine("working") captured BEFORE Stop must NOT revive .working after Stop
+        let task3Start = task2Start.addingTimeInterval(20)
+        runtime.receive(.init(eventID: "cf-pre-3", kind: "hook", awaitsDecision: false, payload: try JSONSerialization.data(withJSONObject: [
+            "hookEventName": "PreInvocation",
+            "conversationId": "live-confetti",
+            "invocationNum": 1,
+            "cwd": "/Users/dev/PulseProject",
+            "lastUserInput": "第三个任务"
+        ])), receivedAt: task3Start)
+        let beforeTask3Stop = runtime.rows
+        runtime.receive(.init(eventID: "cf-stop-3", kind: "hook", awaitsDecision: false, payload: try JSONSerialization.data(withJSONObject: [
+            "hookEventName": "Stop",
+            "conversationId": "live-confetti",
+            "terminationReason": "NO_TOOL_CALL"
+        ])), receivedAt: task3Start.addingTimeInterval(3))
+        expect(ActivitySessionSnapshot.newlyCompleted(in: runtime.rows, previous: beforeTask3Stop)?.id == "agy:live-confetti",
+               "task 3 finishing via Stop while lastScan still holds task 2 fires confetti immediately on Stop")
+        runtime.receive(.init(eventID: "cf-stale-sl-3", kind: "statusLine", awaitsDecision: false, payload: try JSONSerialization.data(withJSONObject: [
+            "session_id": "live-confetti",
+            "agent_state": "working",
+            "capturedAt": task3Start.addingTimeInterval(2.8).timeIntervalSince1970
+        ])), receivedAt: task3Start.addingTimeInterval(3.4))
+        expect(runtime.rows.first(where: { $0.id == "agy:live-confetti" })?.phase == .completed,
+               "in-flight working statusLine captured before Stop never revives active working state")
+
+        // Transcript catching up to task 3 after Stop already fired confetti must NOT double-fire confetti
+        let beforeTask3CatchUp = runtime.rows
+        let task3CatchUpScan = AntigravityScanResult(
+            usage: historicalScan.usage,
+            sessions: [
+                AntigravitySessionRecord(
+                    id: "live-confetti",
+                    surface: .cli,
+                    cwd: "/Users/dev/PulseProject",
+                    title: "Antigravity Confetti Timing",
+                    model: "gemini-4-neon-xhigh",
+                    totalTokens: 19_000,
+                    isSubagent: false,
+                    isLockedLive: true,
+                    summaryBusy: false,
+                    summaryStatus: .idle(modifiedAt: task3Start.addingTimeInterval(3.1)),
+                    caughtUp: true,
+                    turn: .init(
+                        turnID: "step-110",
+                        phase: .completed,
+                        startedAt: task3Start,
+                        updatedAt: task3Start.addingTimeInterval(1),
+                        transcriptModifiedAt: task3Start.addingTimeInterval(3.0),
+                        tokens: 2_000,
+                        text: "第三个任务已完成",
+                        steps: []
+                    )
+                )
+            ]
+        )
+        runtime.consume(task3CatchUpScan, now: task3Start.addingTimeInterval(3.5))
+        expect(ActivitySessionSnapshot.newlyCompleted(in: runtime.rows, previous: beforeTask3CatchUp) == nil,
+               "transcript catch-up after Stop does not double-fire confetti")
+        expect(runtime.rows.first(where: { $0.id == "agy:live-confetti" })?.turnID == "step-110"
+               && runtime.rows.first(where: { $0.id == "agy:live-confetti" })?.phase == .completed,
+               "completed receipt upgrades seamlessly from hook-* to transcript step-110")
 
         // 4. Glass Panel (296pt) multi-provider header & AntigravityGlanceContent never overflow horizontally
         let twoRowHeader = VStack(spacing: 6) {
@@ -539,6 +771,17 @@ enum AntigravityRuntimeTests {
         let viewHost = NSHostingView(rootView: AntigravityView(runtime: runtime).frame(width: 760, height: 600))
         viewHost.layoutSubtreeIfNeeded()
         expect(viewHost.fittingSize.width > 0, "AntigravityView renders cleanly")
+
+        // 4b. Background activity polling must NOT flip runtime.scanning (prevents 2s refresh button & plan chip flicker),
+        // while explicit manual refresh() sets scanning cleanly until completion.
+        runtime.refreshActivity(manual: false)
+        expect(!runtime.scanning, "background refreshActivity(manual: false) stays silent without toggling scanning UI state")
+        runtime.refresh()
+        expect(runtime.scanning, "explicit manual refresh() activates scanning state")
+        for _ in 0..<40 where runtime.scanning {
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+        expect(!runtime.scanning, "manual refresh() clears scanning once scan finishes")
 
         // 5. OneNative agy-statusline live cache decoding, plan metadata carry-forward & updatedAt max
         let oneNativeDir = tempRoot.appendingPathComponent("one-native-agy", isDirectory: true)

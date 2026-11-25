@@ -72,6 +72,11 @@ struct GrokTests {
         expect(turn.promptID == "p2" && turn.active && turn.text == "公开进度", "old completion cannot end new turn")
         _ = turn.consume(event("turn_completed", 108, fields: ["prompt_id": "p2", "stop_reason": "cancelled"]))
         expect(turn.phase == .cancelled && turn.tokens == nil, "cancel without usage still ends task")
+        _ = turn.consume(event("hook_execution", 109.001, fields: ["prompt_id": "p3"]))
+        _ = turn.consume(event("user_message_chunk", 109.002))
+        expect(turn.active && turn.promptID == "p3", "pre-prompt hook binds prompt ID immediately on user chunk")
+        _ = turn.consume(event("turn_completed", 110, fields: ["prompt_id": "p3", "stop_reason": "stop", "usage": spend]))
+        expect(turn.phase == .completed, "stop reason 'stop' maps to completed")
 
         let sessions = root.appendingPathComponent("sessions/group")
         let id = UUID().uuidString, fork = UUID().uuidString, child = UUID().uuidString
@@ -103,6 +108,20 @@ struct GrokTests {
         try Data().write(to: path)
         scan = await reader.scan(now: now.addingTimeInterval(124))
         expect(scan.usage.complete, "truncation clears old malformed state")
+        let bigOutput = String(repeating: "x", count: 1_500_000)
+        try encoded([
+            event("user_message_chunk", 300),
+            event("tool_call", 301, prompt: "p-big", fields: ["toolCallId": "big-1", "title": "Read file"]),
+            event("tool_call_update", 302, prompt: "p-big", fields: ["toolCallId": "big-1", "status": "completed", "rawOutput": bigOutput]),
+            event("turn_completed", 303, fields: ["prompt_id": "p-big", "stop_reason": "end_turn", "usage": spend])
+        ]).write(to: path, options: .atomic)
+        let emptyID = UUID().uuidString
+        let emptyDir = sessions.appendingPathComponent(emptyID)
+        try FileManager.default.createDirectory(at: emptyDir, withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: ["info": ["id": emptyID, "cwd": "/fixture/project"], "generated_title": "Idle"]).write(to: emptyDir.appendingPathComponent("summary.json"))
+        scan = await reader.scan(now: now.addingTimeInterval(130))
+        expect(scan.usage.complete && scan.usage.sessionCount == 3, "1.5MB tool output and brand-new idle session remain complete without false partial warning")
+        expect(scan.sessions.first { $0.id == id }?.turn.phase == .completed, "1.5MB tool line preserves session turn state")
         try JSONSerialization.data(withJSONObject: [["session_id": id, "pid": 123, "pid_start": 10_000_000]]).write(to: root.appendingPathComponent("active_sessions.json"))
         expect(GrokSessionReader.liveIDs(home: root, lookup: { $0 == 123 && $1 == 10 }).contains(id), "registry validates process identity")
         expect(GrokSessionReader.liveIDs(home: root, lookup: { _, _ in false }).isEmpty, "dead or reused process rejected")
@@ -149,6 +168,20 @@ struct GrokTests {
             let attempts = try String(contentsOf: root.appendingPathComponent("attempts"), encoding: .utf8)
             expect(attempts == "3", "read-only retries are bounded at three attempts")
         }
+        let unsupportedCLI = root.appendingPathComponent("old-grok")
+        let oldScript = "#!/usr/bin/env python3\nimport sys,json\nr=json.loads(sys.stdin.readline())\nprint(json.dumps({'jsonrpc':'2.0','id':r['id'],'error':{'code':-32601,'message':'Method not found'}}),flush=True)\n"
+        try oldScript.write(to: unsupportedCLI, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: unsupportedCLI.path)
+        try "valid".write(to: root.appendingPathComponent("mode"), atomically: true, encoding: .utf8)
+        let fallbackQuota = try GrokBillingClient().fetch(executables: [unsupportedCLI, fixture], home: root, timeout: 5)
+        expect(fallbackQuota.remainingPercent == 99, "multi-binary quota fetch falls back when primary shim is unsupported")
+        let managedBin = root.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: managedBin, withIntermediateDirectories: true)
+        let managedGrok = managedBin.appendingPathComponent("grok")
+        try oldScript.write(to: managedGrok, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: managedGrok.path)
+        expect(GrokBillingClient.executable(home: root)?.resolvingSymlinksInPath() == managedGrok.resolvingSymlinksInPath(),
+               "self-updated GROK_HOME/bin/grok takes priority over stale global shims")
         print("PASS Grok core: \(checks) checks")
     }
 }

@@ -108,10 +108,19 @@ import Darwin
     static func main() async throws {
         try liveRegistryTests()
         if CommandLine.arguments.count > 2, CommandLine.arguments[1] == "--scan" {
-            let scanner = ClaudeCodeUsageScanner(projectsURL: URL(fileURLWithPath: CommandLine.arguments[2]))
+            let scanner: ClaudeCodeUsageScanner
+            if CommandLine.arguments[2] == "--default" {
+                let installer = ClaudeCodeInstaller(socketURL: URL(fileURLWithPath: "/tmp/claude-scan.sock"), authenticationToken: "scan")
+                scanner = ClaudeCodeUsageScanner(projectsURLsProvider: { installer.allProjectsURLs() })
+            } else {
+                scanner = ClaudeCodeUsageScanner(projectsURL: URL(fileURLWithPath: CommandLine.arguments[2]))
+            }
             var result = await scanner.scan()
             for _ in 0..<40 where !result.complete { result = await scanner.scan() }
-            print("Claude real logs: files=\(result.fileCount), days=\(result.days.count), tokens=\(result.lifetimeTokens), complete=\(result.complete), unpricedDays=\(result.days.filter { $0.estimatedCost == nil }.count)")
+            let totalCost = result.days.compactMap(\.estimatedCost).reduce(0, +)
+            print(String(format: "Claude real logs: files=%d, days=%d, tokens=%lld, cost=$%.4f, complete=%@, unpricedDays=%d",
+                         result.fileCount, result.days.count, result.lifetimeTokens, totalCost,
+                         String(result.complete), result.days.filter { $0.estimatedCost == nil }.count))
             return
         }
         completionEvidenceTests()
@@ -263,6 +272,51 @@ import Darwin
         question["tool_name"] = "Bash"
         expect(ClaudePermissionRequest.decode(.init(eventID: "q", kind: "hook", awaitsDecision: true, payload: json(question)), sessionID: "claude:fixture") == nil, "ordinary pretool not an approval")
         expect(single.decision(.once, answers: ["Choose?": "custom"]) != nil, "detail window retains custom answers")
+
+        // Multi-account isolated directories when default ~/.claude/projects is absent.
+        let emptyGlobal = root.appendingPathComponent("empty-global-claude", isDirectory: true)
+        try FileManager.default.createDirectory(at: emptyGlobal, withIntermediateDirectories: true)
+        let accountsRoot = root.appendingPathComponent("accounts", isDirectory: true)
+        let accA = accountsRoot.appendingPathComponent("7ac900ef254043289deecee09e8f2ad2/claude/projects/projA", isDirectory: true)
+        let accB = accountsRoot.appendingPathComponent("9bd54e76e629402c9e43f5729915609c/claude/projects/projB", isDirectory: true)
+        let nonHex = accountsRoot.appendingPathComponent("not-a-valid-hex-account/claude/projects/projX", isDirectory: true)
+        for dir in [accA, accB, nonHex] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        let symlinkTarget = root.appendingPathComponent("outside-account/claude/projects/projS", isDirectory: true)
+        try FileManager.default.createDirectory(at: symlinkTarget, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: accountsRoot.appendingPathComponent("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            withDestinationURL: root.appendingPathComponent("outside-account")
+        )
+        try line(response("iso-1", output: 40, model: "claude-opus-5-5")).write(to: accA.appendingPathComponent("s1.jsonl"))
+        try (line(response("iso-1", output: 40, model: "claude-opus-5-5"))
+             + line(response("iso-2", output: 60, model: "claude-opus-5-5"))).write(to: accB.appendingPathComponent("s2.jsonl"))
+        try line(response("ignored-nonhex", output: 999, model: "claude-opus-5-5")).write(to: nonHex.appendingPathComponent("x.jsonl"))
+        try line(response("ignored-symlink", output: 999, model: "claude-opus-5-5")).write(to: symlinkTarget.appendingPathComponent("s.jsonl"))
+
+        let multiInstaller = ClaudeCodeInstaller(
+            socketURL: root.appendingPathComponent("multi.sock"),
+            authenticationToken: "multi-fixture",
+            configurationDirectory: emptyGlobal,
+            supportDirectory: root.appendingPathComponent("multi-support"),
+            helperURL: helper,
+            isolatedAccountsRootURL: accountsRoot
+        )
+        expect(multiInstaller.isolatedConfigurationDirectories().count == 2, "only owned 32-hex non-symlink accounts discovered")
+        let multiScanner = ClaudeCodeUsageScanner(projectsURLsProvider: { multiInstaller.allProjectsURLs() })
+        let multiSummary = await multiScanner.scan()
+        // iso-1: 100 in + 40 out + 50 cacheRead = 190; iso-2: 100 in + 60 out + 50 cacheRead = 210 => total 400 (iso-1 deduplicated across accounts)
+        expect(multiSummary.fileCount == 2 && multiSummary.lifetimeTokens == 400 && multiSummary.complete, "isolated accounts scanned and deduplicated when ~/.claude/projects is absent")
+        expect((multiSummary.days.first?.estimatedCost ?? 0) > 0, "Opus 5.5 cost computed across isolated accounts")
+
+        // Dynamically added isolated account picked up on subsequent scan without recreating scanner.
+        let accC = accountsRoot.appendingPathComponent("cccccccccccccccccccccccccccccccc/claude/projects/projC", isDirectory: true)
+        try FileManager.default.createDirectory(at: accC, withIntermediateDirectories: true)
+        try line(response("iso-3", output: 50, model: "claude-opus-5-5")).write(to: accC.appendingPathComponent("s3.jsonl"))
+        let updatedSummary = await multiScanner.scan()
+        expect(updatedSummary.fileCount == 3 && updatedSummary.lifetimeTokens == 600, "newly added isolated account discovered dynamically")
+
         print("Claude integration tests: \(checks) checks passed")
     }
     static func run(helper: URL, args: [String], input: Data, grokEvent: String? = nil) throws -> Data {

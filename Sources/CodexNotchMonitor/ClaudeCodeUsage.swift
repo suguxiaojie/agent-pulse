@@ -78,12 +78,17 @@ public actor ClaudeCodeUsageScanner {
     }
 
     public static let maximumFiles = 20_000
-    private let projectsURL: URL
+    private let projectsURLsProvider: @Sendable () -> [URL]
     private let readBudgetBytes: Int
     private var files: [String: FileState] = [:]
 
     public init(projectsURL: URL, readBudgetBytes: Int = 67_108_864) {
-        self.projectsURL = projectsURL
+        self.projectsURLsProvider = { [projectsURL] }
+        self.readBudgetBytes = readBudgetBytes
+    }
+
+    public init(projectsURLsProvider: @escaping @Sendable () -> [URL], readBudgetBytes: Int = 67_108_864) {
+        self.projectsURLsProvider = projectsURLsProvider
         self.readBudgetBytes = readBudgetBytes
     }
 
@@ -146,16 +151,26 @@ public actor ClaudeCodeUsageScanner {
 
     private func transcriptFiles() -> [(String, UInt64, Date)] {
         let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey]
-        guard let enumerator = FileManager.default.enumerator(at: projectsURL, includingPropertiesForKeys: keys,
-                                                              options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return [] }
         var result: [(String, UInt64, Date)] = []
-        for case let url as URL in enumerator {
-            guard url.pathExtension == "jsonl",
-                  let values = try? url.resourceValues(forKeys: Set(keys)),
-                  values.isRegularFile == true, values.isSymbolicLink != true,
-                  let size = values.fileSize else { continue }
-            result.append((url.path, UInt64(size), values.contentModificationDate ?? .distantPast))
-            if result.count >= Self.maximumFiles { break }
+        var seenDirectories = Set<String>()
+        var seenFiles = Set<String>()
+        for projectsURL in projectsURLsProvider() {
+            let canonicalDir = projectsURL.resolvingSymlinksInPath().path
+            guard seenDirectories.insert(canonicalDir).inserted,
+                  let enumerator = FileManager.default.enumerator(
+                    at: projectsURL, includingPropertiesForKeys: keys,
+                    options: [.skipsHiddenFiles, .skipsPackageDescendants]
+                  ) else { continue }
+            for case let url as URL in enumerator {
+                guard url.pathExtension == "jsonl",
+                      let values = try? url.resourceValues(forKeys: Set(keys)),
+                      values.isRegularFile == true, values.isSymbolicLink != true,
+                      let size = values.fileSize else { continue }
+                let canonicalFile = url.resolvingSymlinksInPath().path
+                guard seenFiles.insert(canonicalFile).inserted else { continue }
+                result.append((url.path, UInt64(size), values.contentModificationDate ?? .distantPast))
+                if result.count >= Self.maximumFiles { return result }
+            }
         }
         return result
     }

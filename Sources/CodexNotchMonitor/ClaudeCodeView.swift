@@ -26,18 +26,18 @@ struct ClaudeCodeView: View {
                         })).labelsHidden().disabled(runtime.configuring)
                     }
                     SettingsRowDivider()
-                    SettingsRow(symbol: "checkmark.shield", title: "在 Pulse 中处理请求", detail: "显示真实权限请求与单选问题；未处理或断线时交回原客户端。") {
+                    SettingsRow(symbol: "checkmark.shield", title: "在 Pulse 中处理请求", detail: "在灵动岛处理权限确认与提问，未处理时交回原客户端。") {
                         Toggle("在 Pulse 中处理请求", isOn: Binding(get: { runtime.approvalsEnabled }, set: {
                             runtime.configure(enabled: true, approvals: $0, statusLine: runtime.statusLineEnabled)
                         })).labelsHidden().disabled(!runtime.enabled || runtime.configuring)
                     }
                     SettingsRowDivider()
-                    SettingsRow(symbol: "gauge.with.dots.needle.50percent", title: "官方额度窗口", detail: "通过 Claude 状态栏采集，继续转发原状态栏输出。") {
+                    SettingsRow(symbol: "gauge.with.dots.needle.50percent", title: "官方额度窗口", detail: "通过状态栏同步官方剩余额度，不影响原有状态栏。") {
                         Toggle("采集官方额度", isOn: Binding(get: { runtime.statusLineEnabled }, set: {
                             runtime.configure(enabled: true, approvals: runtime.approvalsEnabled, statusLine: $0)
                         })).labelsHidden().disabled(!runtime.enabled || runtime.configuring)
                     }
-                    Text("启用时备份 settings.json，仅管理 Pulse 的 Claude 条目；停用恢复原状态栏。已有会话可能需要重新启动。")
+                    Text("启用前自动备份原配置，停用自动还原；已有会话需重启后生效。")
                         .font(MonitorDesktopTypography.metadata).foregroundStyle(MonitorDesktopTheme.secondaryText)
                         .padding(.bottom, 12)
                     if let error = runtime.error {
@@ -79,6 +79,7 @@ struct ClaudeCodeView: View {
                 }
             }.padding(4).padding(.bottom, 20)
         }.toggleStyle(PanelSettingsToggleStyle()).tint(MonitorDesktopTheme.accent)
+            .onAppear { runtime.refreshUsageIfNeeded() }
             .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { now = $0 }
     }
     private var quota: some View {
@@ -94,7 +95,7 @@ struct ClaudeCodeView: View {
                 quotaWindow("每周", window: runtime.limits?.sevenDay)
             }
             if runtime.limits == nil {
-                Text(runtime.statusLineEnabled ? "订阅窗口需 Claude Code 首次 API 响应后提供；API 账号或不支持的窗口显示为未知。" : "尚未开启状态栏采集。")
+                Text(runtime.statusLineEnabled ? "在 Claude Code 发起一次对话后即可同步；API 账号不提供订阅窗口。" : "尚未开启状态栏采集。")
                     .font(MonitorDesktopTypography.metadata).foregroundStyle(MonitorDesktopTheme.secondaryText)
             }
         }.padding(18).modifier(MonitorDesktopCardSurface())
@@ -176,7 +177,7 @@ struct ClaudeCodeView: View {
                     }
                 }
             }
-            Text("本机全部 Claude 记录，含子 Agent；按消息去重，未推断账号归属。公开标准单价估算，非订阅账单；未知模型或无法确认的计价条件保留未知。费率核对：2026-10-21。")
+            Text("统计本机 Claude Code 用量（含子 Agent）；成本按公开 API 费率估算，非订阅账单。")
                 .font(MonitorDesktopTypography.metadata).foregroundStyle(MonitorDesktopTheme.secondaryText)
         }.padding(18).modifier(MonitorDesktopCardSurface())
     }

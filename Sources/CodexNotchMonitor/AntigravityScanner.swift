@@ -24,6 +24,10 @@ struct AntigravitySessionRecord: Equatable, Sendable {
         var phase: TurnPhase = .idle
         var startedAt: Date?
         var updatedAt = Date.distantPast
+        /// Modification timestamp of `transcript.jsonl` when this turn's latest line was observed.
+        /// Antigravity stamps `PLANNER_RESPONSE.created_at` at invocation start rather than finish,
+        /// so `transcriptModifiedAt` captures the true flush/completion time without breaking synthetic tests.
+        var transcriptModifiedAt: Date? = nil
         var tokens = 0
         var text = ""
         var steps: [StepItem] = []
@@ -211,13 +215,22 @@ actor AntigravityScanner {
                 var current = state ?? CachedTranscript(device: fileStat.st_dev, inode: fileStat.st_ino, offset: 0)
 
                 var caughtUp = true
+                let fileMTime = Date(
+                    timeIntervalSince1970: Double(fileStat.st_mtimespec.tv_sec)
+                        + Double(fileStat.st_mtimespec.tv_nsec) / 1_000_000_000
+                )
                 if size > current.offset {
                     if remainingBudget <= 0 {
                         caughtUp = false
                         allComplete = false
                     } else {
+                        let previousTurn = current.turn
                         let outcome = advance(&current, from: transcriptURL, fileSize: size, budget: &remainingBudget)
                         caughtUp = outcome.caughtUp
+                        if current.turn != previousTurn, current.turn.turnID != nil {
+                            let boundedMTime = min(now, fileMTime)
+                            current.turn.transcriptModifiedAt = max(current.turn.updatedAt, boundedMTime)
+                        }
                         if !outcome.caughtUp || !current.complete {
                             allComplete = false
                         }

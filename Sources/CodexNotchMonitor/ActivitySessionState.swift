@@ -152,8 +152,25 @@ struct ActivitySessionSnapshot: Identifiable, Equatable {
 
     static func newlyCompleted(in rows: [Self], previous: [Self]) -> Self? {
         rows.filter { row in row.phase == .completed && !row.suppressCompletion && !row.isRetainedReceipt && previous.contains {
-            $0.id == row.id && $0.turnID == row.turnID && $0.phase.isActive
+            $0.id == row.id
+                && matchesTurnForCompletion(previous: $0, current: row)
+                && $0.phase.isActive
         } }.max { $0.updatedAt < $1.updatedAt }
+    }
+
+    private static func matchesTurnForCompletion(previous: Self, current: Self) -> Bool {
+        if previous.turnID == current.turnID { return true }
+        guard let prevTurn = previous.turnID, let currTurn = current.turnID else { return false }
+        if prevTurn.hasPrefix("pending-"), previous.startedAt == current.startedAt {
+            return true
+        }
+        if prevTurn.hasPrefix("hook-"), currTurn.hasPrefix("step-") {
+            if let prevStart = previous.startedAt, let currStart = current.startedAt {
+                return abs(currStart.timeIntervalSince(prevStart)) <= 10
+            }
+            return true
+        }
+        return false
     }
 
     static func newAttention(in rows: [Self], previous: [Self]) -> Self? {

@@ -9,8 +9,9 @@ struct GrokView: View {
     @AppStorage(CountStyle.preferenceKey) private var countStyle = CountStyle.chinese.rawValue
 
     private var history: [GrokUsageSummary.Day] {
-        let lower = Calendar.current.date(byAdding: .day, value: 1 - days, to: Calendar.current.startOfDay(for: now))!
-        return (runtime.usage?.days ?? []).filter { $0.date >= lower && $0.date <= now }.sorted { $0.date < $1.date }
+        let displayNow = GrokDisplayClock.now(sampled: now)
+        let lower = Calendar.current.date(byAdding: .day, value: 1 - days, to: Calendar.current.startOfDay(for: displayNow))!
+        return (runtime.usage?.days ?? []).filter { $0.date >= lower && $0.date <= displayNow }.sorted { $0.date < $1.date }
     }
 
     private var tokenTotal: Int { history.reduce(0) { GrokJSON.add($0, $1.tokens) } }
@@ -27,8 +28,8 @@ struct GrokView: View {
     }
 
     private var usageCaption: String {
-        "本机轮次记录，fork 历史去重；成本来自 CLI 报告，不是订阅账单。"
-            + (runtime.usage?.complete == false ? "当前只覆盖部分记录。" : "")
+        "统计本机 Grok CLI 用量；成本取自 CLI 报告，非订阅账单。"
+            + (runtime.usage?.complete == false ? "当前仅包含部分记录。" : "")
     }
 
     var body: some View {
@@ -44,13 +45,18 @@ struct GrokView: View {
             .padding(.bottom, 8)
         }
         .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { now = $0 }
-        .onAppear { now = Date(); runtime.refreshAutomaticStatus() }
+        .onAppear {
+            let current = Date()
+            now = current
+            runtime.refreshAutomaticStatus()
+            runtime.refreshIfNeeded(now: current)
+        }
         .onChange(of: runtime.quota?.capturedAt) { _ in now = Date() }
     }
 
     private var connection: some View {
         PanelSettingsGroup(title: "Grok CLI 连接", symbol: "sparkle") {
-            SettingsRow(symbol: "terminal", title: "任务与用量", detail: "官方额度和本机会话；自动问答仅管理下方的共享启动设置。") {
+            SettingsRow(symbol: "terminal", title: "任务与用量", detail: "同步官方额度、本机用量与实时任务。") {
                 Toggle("启用 Grok CLI", isOn: Binding(get: { runtime.enabled }, set: { runtime.configure(enabled: $0) }))
                     .labelsHidden()
                     .toggleStyle(PanelSettingsToggleStyle(onTitle: "开启", offTitle: "关闭"))
@@ -72,7 +78,7 @@ struct GrokView: View {
                 .buttonStyle(PanelSettingsActionStyle(prominent: !runtime.automaticReady && !runtime.automaticConfiguring))
                 .disabled(runtime.automaticConfiguring)
             }
-            Text("一次启用官方共享启动设置后，照常在任意项目运行 grok 即可；无需选目录或新建终端。原值会备份，仅影响之后正常启动的 Grok，当前任务保持运行。连接前已有的请求回原终端。")
+            Text("启用前自动备份原配置，仅对新启动的 Grok 会话生效，不影响当前运行中的任务。")
                 .font(MonitorDesktopTypography.metadata)
                 .foregroundStyle(MonitorDesktopTheme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -254,8 +260,8 @@ struct GrokView: View {
             if runtime.rows.isEmpty {
                 MonitorCenterEmptyState(
                     symbol: "bolt.horizontal.circle",
-                    title: "当前没有已确认的活动任务",
-                    detail: "共享模式支持岛内选项、文字回答及工具允许一次／拒绝；其他交互回 Grok 原终端。"
+                    title: "暂无运行中的任务",
+                    detail: "在 Grok CLI 中发起任务后，会在此与灵动岛同步显示。"
                 )
             } else {
                 ForEach(Array(runtime.rows.enumerated()), id: \.element.id) { index, row in
@@ -289,11 +295,6 @@ struct GrokView: View {
                     }
                     .padding(.vertical, 8)
                 }
-                Text("共享模式支持岛内选项、文字回答及工具允许一次／拒绝；其他交互回 Grok 原终端。")
-                    .font(MonitorDesktopTypography.metadata)
-                    .foregroundStyle(MonitorDesktopTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 4)
             }
         }
         .modifier(MonitorCenterCard())
@@ -438,12 +439,13 @@ struct GrokGlanceContent: View {
                 }
             }
             if showCost || showActivity {
+                let displayNow = GrokDisplayClock.now(sampled: now)
                 let cost = showCost && (!showActivity || metric != "token")
                 let days = runtime.usage?.days ?? []
                 GlanceWeatherStrip(
                     buckets: GlanceDayStrip.buckets(samples: days.compactMap { day in
                         (cost ? day.cost : Double(day.tokens)).map { .init(date: day.date, value: $0) }
-                    }, now: now),
+                    }, now: displayNow),
                     isCost: cost,
                     isReady: runtime.usage != nil,
                     showsSelector: showCost && showActivity,
@@ -462,7 +464,8 @@ struct GrokGlanceContent: View {
 
     @ViewBuilder
     private var dataBlocks: some View {
-        let today = Calendar.current.startOfDay(for: now)
+        let displayNow = GrokDisplayClock.now(sampled: now)
+        let today = Calendar.current.startOfDay(for: displayNow)
         let lower = Calendar.current.date(byAdding: .day, value: -29, to: today)!
         let todayDay = runtime.usage?.days.first { $0.date == today }
         let todayTokens = todayDay?.tokens ?? 0

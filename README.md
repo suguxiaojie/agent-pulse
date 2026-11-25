@@ -6,7 +6,7 @@
 
 **在菜单栏与刘海灵动岛里，统一看清 Codex、Claude Code、Grok CLI 与 Google Antigravity 的官方额度、实时任务、交互问答与本机用量。**
 
-[English](README.en.md) · [下载 v2.1.0](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.1.0) · [MIT License](LICENSE)
+[English](README.en.md) · [下载 v2.2.0](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.2.0) · [MIT License](LICENSE)
 
 macOS 13+ · 原生 SwiftUI / AppKit · Apple Silicon (`arm64`) & Intel (`x86_64`)
 
@@ -14,7 +14,7 @@ macOS 13+ · 原生 SwiftUI / AppKit · Apple Silicon (`arm64`) & Intel (`x86_64
 
 Agent Pulse（原 Codex Pulse）是一款原生 macOS 菜单栏与刘海灵动岛监控工具。官方额度来自本机 Codex App Server、Claude 状态栏、xAI 官方 `grok` 查询与 Google Antigravity `agy` 状态栏；实时任务与交互请求来自桌面 IPC、隔离命名 Hook 或经进程核对的本地共享通道。**全程不读取、不存储账号凭据或邮箱，绝不静默自动批准权限。**
 
-当前版本 **v2.1.0（Build 36）** 带来四联微缩遥测磁贴、四家真实官方品牌矢量徽标、四模型统一等高灵动岛仪表盘，以及 Google Antigravity 灵动岛交互提问与工具审批。
+当前版本 **v2.2.0（Build 37）** 新增灵动岛静默态自动跟随末次完成任务的代理（左上角额度与像素桌宠同步）、Claude／Grok／Antigravity 消耗至 ≤80% 到点重置与恢复提醒、Claude Code 多账号隔离目录统计支持，并修复 Antigravity 完成烟花触发时机与刷新跳闪。
 
 ---
 
@@ -35,7 +35,7 @@ Agent Pulse（原 Codex Pulse）是一款原生 macOS 菜单栏与刘海灵动�
 
 - **岛内直接回答与显式单次审批**：支持 Codex（桌面 IPC 与 OneNative 活动轮次约束）、Claude Code、Grok CLI 与 Google Antigravity 的真实提问回答及工具「批准一次／拒绝」；保留原生选项 ID，不生成长期授权，断线或超时一律 Fail-Safe 交回原客户端处理，不会自动批准。
 - **四端统一等高用量面板**：顶部四家真实品牌徽标一键切换，同心双环表盘同时呈现主副窗口（如 5 小时与每周额度），底部集成 30 日成本柱图与单屏自适应 Token 热力图，跨模型切换零高度跳动。
-- **完成反馈与到期提醒**：任务完成后在 60 秒留存期内锁定真实轮次耗时并支持可选提示音与三档礼花；关注信号、额度恢复及 Codex 重置卡到期前 24／12／6 小时同步推送系统通知与岛内提醒卡片。
+- **完成反馈与多端重置提醒**：任务完成后在 60 秒留存期内锁定真实轮次耗时并支持可选提示音与三档礼花；静默态左上角剩余额度与像素桌宠自动跟随最后一个完成任务的代理；Codex、Claude Code、Grok CLI 与 Antigravity 额度消耗至 ≤80% 后到点重置或恢复，以及 Codex 重置卡到期前 24／12／6 小时同步推送系统通知与岛内提醒卡片。
 
 ---
 
@@ -100,9 +100,9 @@ Agent Pulse（原 Codex Pulse）是一款原生 macOS 菜单栏与刘海灵动�
 </p>
 
 <details>
-<summary>查看「安装与权限」页面（v2.1.0 · Build 36）</summary>
+<summary>查看「安装与权限」页面（v2.2.0 · Build 37）</summary>
 <p align="center">
-  <img src="docs/images/pulse-setup.png" alt="安装与权限：v2.1.0 Build 36、共享 Codex 任务连接与到期提醒开关" width="84%">
+  <img src="docs/images/pulse-setup.png" alt="安装与权限：v2.2.0 Build 37、共享 Codex 任务连接与到期提醒开关" width="84%">
 </p>
 </details>
 
@@ -110,16 +110,16 @@ Agent Pulse（原 Codex Pulse）是一款原生 macOS 菜单栏与刘海灵动�
 
 ## 下载与安装
 
-前往 [GitHub Releases (`v2.1.0`)](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.1.0) 下载对应架构安装包：
+前往 [GitHub Releases (`v2.2.0`)](https://github.com/suguxiaojie/agent-pulse/releases/tag/v2.2.0) 下载对应架构安装包：
 
 | Mac 处理器 | 安装包下载 |
 |---|---|
-| **Apple Silicon（M1 / M2 / M3 / M4）** | [CodexNotchMonitor-v2.1.0-arm64.dmg](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.1.0/CodexNotchMonitor-v2.1.0-arm64.dmg) |
-| **Intel (`x86_64`)** | [CodexNotchMonitor-v2.1.0-x86_64.dmg](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.1.0/CodexNotchMonitor-v2.1.0-x86_64.dmg) |
+| **Apple Silicon（M1 / M2 / M3 / M4）** | [CodexNotchMonitor-v2.2.0-arm64.dmg](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.2.0/CodexNotchMonitor-v2.2.0-arm64.dmg) |
+| **Intel (`x86_64`)** | [CodexNotchMonitor-v2.2.0-x86_64.dmg](https://github.com/suguxiaojie/agent-pulse/releases/download/v2.2.0/CodexNotchMonitor-v2.2.0-x86_64.dmg) |
 
 1. 打开对应架构的 `.dmg`，将 **Agent Pulse**（`CodexNotchMonitor.app`）拖入「应用程序（`/Applications`）」。
 2. 启动应用。Codex 官方额度需本机已登录 Codex／ChatGPT 桌面端；Claude Code、Grok CLI 与 Google Antigravity 可在监控中心按需开启。
-3. 安装包采用临时签名（Ad-hoc Signed），尚未经过 Apple 公证；首次打开若遇系统拦截，请在核对 Release `SHA256SUMS-v2.1.0.txt` 后于「系统设置 → 隐私与安全性」中点击允许。
+3. 安装包采用临时签名（Ad-hoc Signed），尚未经过 Apple 公证；首次打开若遇系统拦截，请在核对 Release `SHA256SUMS-v2.2.0.txt` 后于「系统设置 → 隐私与安全性」中点击允许。
 4. 为保持老用户无缝升级，Bundle ID（`com.coverai.codex-notch-monitor`）、可执行文件名与本地数据目录均保持兼容，覆盖安装后原有配置与历史记录完整保留。
 
 ---

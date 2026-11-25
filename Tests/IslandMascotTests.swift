@@ -143,6 +143,99 @@ import SwiftUI
         expect(petModel.idlePetSpecies == .clawd, "idle follows the most recently active client")
         petModel.sessions = []
         expect(petModel.idlePetSpecies == .clawd, "idle keeps the last active pet once sessions clear")
+
+        // Idle mascot and top-left quota percentage sync with the last finished agent across all providers.
+        let syncModel = ActivityIslandViewModel()
+        let syncNow = Date()
+        let codexBucket = RateLimitBucket(
+            id: "codex", name: "Codex", planType: "plus",
+            primary: RateLimitWindow(usedPercent: 28, windowDurationMinutes: 300, resetsAt: syncNow.addingTimeInterval(3600)),
+            secondary: nil, creditBalance: nil, hasCredits: false
+        )
+        syncModel.quotaState = .loaded([codexBucket], syncNow)
+        syncModel.updateClaudeEnabled(true)
+        syncModel.claudeStatusLineEnabled = true
+        syncModel.claudeLimits = .init(
+            fiveHour: .init(usedPercent: 12, resetsAt: syncNow.addingTimeInterval(7200)),
+            sevenDay: .init(usedPercent: 30, resetsAt: syncNow.addingTimeInterval(86400)),
+            capturedAt: syncNow
+        )
+        syncModel.grokEnabled = true
+        syncModel.grokQuota = GrokQuotaSnapshot(
+            usedPercent: 5, startsAt: nil, resetsAt: syncNow.addingTimeInterval(3600),
+            periodType: "weekly", plan: "SuperGrok", prepaidCents: nil,
+            sharedPool: true, capturedAt: syncNow
+        )
+        syncModel.antigravityEnabled = true
+        syncModel.antigravityStatusLineEnabled = true
+        syncModel.antigravityQuota = AntigravityQuotaSnapshot(
+            windows: [
+                AntigravityQuotaWindow(id: "gemini_pro", title: "Gemini", remainingPercent: 64, usedPercent: 36,
+                    durationMinutes: 300, resetsAt: syncNow.addingTimeInterval(7200), sortPriority: 0),
+                AntigravityQuotaWindow(id: "claude", title: "Claude", remainingPercent: 82, usedPercent: 18,
+                    durationMinutes: 300, resetsAt: syncNow.addingTimeInterval(7200), sortPriority: 1)
+            ],
+            planTier: "pro", aiCredits: nil, useG1Credits: nil, capturedAt: syncNow
+        )
+        func makeRow(_ id: String, provider: String, phase: TaskPhase, at: Date, retained: Bool = false) -> ActivitySessionSnapshot {
+            var item = ActivitySessionSnapshot(sessionID: id, turnID: "turn-\(id)", projectID: "p", projectName: "P",
+                title: provider, phase: phase, actionText: "", updatedAt: at, tokenUsage: nil)
+            item.provider = provider
+            item.isRetainedReceipt = retained
+            if !phase.isActive { item.endReason = phase == .completed ? .completed : phase == .failed ? .failed : .ended }
+            return item
+        }
+        // 1) Codex finishes first -> idle shows Codex pet & 72%.
+        let t1 = syncNow.addingTimeInterval(-30)
+        syncModel.sessions = [makeRow("c1", provider: "Codex", phase: .working, at: t1)]
+        let codexDone = makeRow("c1", provider: "Codex", phase: .completed, at: t1.addingTimeInterval(2))
+        syncModel.sessions = [codexDone]
+        expect(syncModel.idleProvider == .codex && syncModel.idlePetSpecies == .codex && syncModel.compactQuotaPercent == "72%",
+               "Codex completion syncs idle pet and quota")
+        // 2) Claude starts running while Codex receipt stays: idleProvider waits until Claude finishes.
+        let t2 = syncNow.addingTimeInterval(-20)
+        syncModel.sessions = [codexDone, makeRow("cl1", provider: "Claude Code", phase: .working, at: t2)]
+        expect(syncModel.idleProvider == .codex, "running task does not prematurely overwrite last finished agent")
+        // 3) Claude finishes -> idle syncs to Claude (Clawd + 88%), even if older Codex stays after Claude expires.
+        let claudeDone = makeRow("cl1", provider: "Claude Code", phase: .completed, at: t2.addingTimeInterval(5))
+        syncModel.sessions = [codexDone, claudeDone]
+        expect(syncModel.idleProvider == .claude && syncModel.idlePetSpecies == .clawd && syncModel.compactQuotaPercent == "88%",
+               "Claude completion syncs idle pet and Claude remaining quota")
+        syncModel.sessions = [codexDone]
+        expect(syncModel.idleProvider == .claude && syncModel.compactQuotaPercent == "88%",
+               "older retained Codex receipt never reverts newer Claude idle state")
+        syncModel.sessions = []
+        expect(syncModel.idleProvider == .claude && syncModel.idlePetSpecies == .clawd && syncModel.compactQuotaPercent == "88%",
+               "pure idle keeps last finished Claude pet and quota")
+        // 4) Grok finishes -> syncs to Grok Bot + 95%.
+        let t3 = syncNow.addingTimeInterval(-10)
+        syncModel.sessions = [makeRow("g1", provider: "Grok CLI", phase: .working, at: t3)]
+        syncModel.sessions = [makeRow("g1", provider: "Grok CLI", phase: .completed, at: t3.addingTimeInterval(2))]
+        syncModel.sessions = []
+        expect(syncModel.idleProvider == .grok && syncModel.idlePetSpecies == .grok && syncModel.compactQuotaPercent == "95%",
+               "Grok completion syncs idle pet and Grok quota")
+        // 5) Antigravity finishes -> syncs to Antigravity pet + 64% (minimum active window).
+        let t4 = syncNow.addingTimeInterval(-5)
+        syncModel.sessions = [makeRow("a1", provider: "Antigravity", phase: .working, at: t4)]
+        syncModel.sessions = [makeRow("a1", provider: "Antigravity", phase: .completed, at: t4.addingTimeInterval(2))]
+        syncModel.sessions = []
+        expect(syncModel.idleProvider == .antigravity && syncModel.idlePetSpecies == .antigravity && syncModel.compactQuotaPercent == "64%",
+               "Antigravity completion syncs idle pet and Antigravity quota")
+        syncModel.privacyMode = true
+        expect(syncModel.compactQuotaPercent == "—", "privacy hides non-Codex idle quota")
+        syncModel.privacyMode = false
+        // 6) Restoring persisted idle provider resists older retained baseline rows and falls back when disabled.
+        let restored = ActivityIslandViewModel()
+        restored.antigravityEnabled = true
+        restored.antigravityStatusLineEnabled = true
+        restored.antigravityQuota = syncModel.antigravityQuota
+        restored.restoreIdleProvider(.antigravity, finishedAt: t4.addingTimeInterval(2))
+        restored.sessions = [makeRow("old-codex", provider: "Codex", phase: .completed, at: t1, retained: true)]
+        expect(restored.idleProvider == .antigravity && restored.compactQuotaPercent == "64%",
+               "restored idle provider resists older baseline retained receipt")
+        restored.antigravityEnabled = false
+        expect(restored.idleProvider == .codex && restored.idlePetSpecies == .codex,
+               "disabling current idle provider falls back to Codex")
         let codexBadge = IslandClawdBadgeView(frame: .zero)
         codexBadge.apply(mood: .tool, pixel: 2.2, gaze: 0, reduceMotion: true, playing: true, species: .codex)
         expect(codexBadge.shown == .tool && codexBadge.species == .codex, "badge shows the Codex pet")

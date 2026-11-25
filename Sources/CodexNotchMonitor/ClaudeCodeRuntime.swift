@@ -72,7 +72,7 @@ final class ClaudeCodeRuntime: ObservableObject {
             authenticationToken: UUID().uuidString + UUID().uuidString)
         self.installer = installer
         bridge = ClaudeCodeBridge(socketURL: installer.socketURL, authenticationToken: installer.authenticationToken)
-        scanner = ClaudeCodeUsageScanner(projectsURL: installer.projectsURL)
+        scanner = ClaudeCodeUsageScanner(projectsURLsProvider: { [installer] in installer.allProjectsURLs() })
     }
 
     func start() {
@@ -208,6 +208,13 @@ final class ClaudeCodeRuntime: ObservableObject {
             let result = await scanner.scan()
             guard let self, !Task.isCancelled, generation == epoch else { return }
             usage = result; scanning = false; usageTask = nil; lastUsageScan = Date()
+        }
+    }
+
+    func refreshUsageIfNeeded(now: Date = Date(), maxAge: TimeInterval = 15) {
+        guard enabled, !configuring, usageTask == nil else { return }
+        if usage == nil || usage?.complete == false || now.timeIntervalSince(lastUsageScan) >= maxAge {
+            refreshUsage()
         }
     }
 
@@ -348,6 +355,7 @@ final class ClaudeCodeRuntime: ObservableObject {
             let reason: SessionEndReason = cancelled ? .cancelled : event == "StopFailure" ? .failed : event == "Stop" ? .completed : .ended
             session.row.endReason = reason; session.row.phase = reason.phase
             session.row.actionText = (object["last_assistant_message"] as? String).map { String($0.prefix(500)) } ?? reason.title
+            if startupUsageDeadline == nil { refreshUsage() }
         case "PreCompact": session.row.phase = .usingTool; session.row.actionText = "正在压缩上下文"
         case "PostCompact": session.row.phase = .working; session.row.actionText = "上下文压缩完成"
         case "SubagentStart": session.row.actionText = "子 Agent 工作中"
@@ -369,8 +377,12 @@ final class ClaudeCodeRuntime: ObservableObject {
 
     private func validTranscript(_ path: String) -> Bool {
         let url = URL(fileURLWithPath: path).standardizedFileURL
-        let root = installer.projectsURL.resolvingSymlinksInPath().path + "/"
-        return url.pathExtension == "jsonl" && url.resolvingSymlinksInPath().path.hasPrefix(root)
+        guard url.pathExtension == "jsonl" else { return false }
+        let resolved = url.resolvingSymlinksInPath().path
+        return installer.allProjectsURLs().contains { projectsURL in
+            let root = projectsURL.resolvingSymlinksInPath().path + "/"
+            return resolved.hasPrefix(root)
+        }
     }
 
     private func readTranscript(_ key: String, now: Date = Date()) {
@@ -472,9 +484,13 @@ final class ClaudeCodeRuntime: ObservableObject {
         guard recoverMissing || !tracked.isEmpty else { return }
         registryReadInFlight = true
         let epoch = generation
-        let registry = ClaudeLiveSessionRegistry(configurationDirectory: installer.configurationDirectory)
+        let installer = installer
         configurationQueue.async { [weak self] in
-            let records = registry.read(includeTranscripts: recoverMissing)
+            let allRecords = installer.allConfigurationDirectories().flatMap { directory in
+                ClaudeLiveSessionRegistry(configurationDirectory: directory).read(includeTranscripts: recoverMissing)
+            }
+            let counts = Dictionary(grouping: allRecords, by: \.sessionID).mapValues(\.count)
+            let records = allRecords.filter { counts[$0.sessionID] == 1 }
             let liveOwners = Set(tracked.filter { ClaudeLiveSessionRegistry.isCurrent($0.value) }.keys)
             Task { @MainActor [weak self] in
                 guard let self, self.generation == epoch, self.running, self.enabled, !self.configuring else { return }

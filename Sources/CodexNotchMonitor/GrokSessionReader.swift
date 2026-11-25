@@ -4,6 +4,8 @@ import Darwin
 struct GrokTurnState: Equatable {
     enum Phase { case idle, working, tool, completed, cancelled, failed, ended }
     var promptID: String?
+    var pendingPromptID: String?
+    var pendingPromptAt = Date.distantPast
     var phase = Phase.idle
     var startedAt: Date?
     var updatedAt = Date.distantPast
@@ -13,16 +15,32 @@ struct GrokTurnState: Equatable {
     var retired: [String] = []
     struct Step: Equatable { let id: String; var title: String; var status: String }
     var active: Bool { phase == .working || phase == .tool }
+    var effectivePromptID: String? {
+        if let promptID { return promptID }
+        guard active, let startedAt else { return nil }
+        return "pending-\(Int((startedAt.timeIntervalSince1970 * 1000).rounded()))"
+    }
     mutating func consume(_ object: [String: Any]) -> (String, Date, GrokSpend)? {
         guard let params = object["params"] as? [String: Any], let update = params["update"] as? [String: Any],
               let kind = update["sessionUpdate"] as? String else { return nil }
         let meta = params["_meta"] as? [String: Any] ?? [:]
         guard let date = GrokJSON.eventDate(object) else { return nil }
         let prompt = (meta["promptId"] ?? update["prompt_id"]) as? String
+        if kind == "hook_execution" {
+            if let prompt, !retired.contains(prompt), prompt != promptID, date >= updatedAt {
+                pendingPromptID = prompt
+                pendingPromptAt = date
+                if active && promptID == nil { promptID = prompt }
+            }
+            return nil
+        }
         if kind == "user_message_chunk" {
             guard date >= updatedAt else { return nil }
             if let id = promptID { retired.append(id); retired = Array(retired.suffix(128)) }
-            promptID = nil; phase = .working; startedAt = date; updatedAt = date; text = ""; steps = []; tokens = nil
+            let candidate = prompt ?? (abs(date.timeIntervalSince(pendingPromptAt)) <= 5 ? pendingPromptID : nil)
+            let inherited = candidate.flatMap { retired.contains($0) ? nil : $0 }
+            pendingPromptID = nil; pendingPromptAt = .distantPast
+            promptID = inherited; phase = .working; startedAt = date; updatedAt = date; text = ""; steps = []; tokens = nil
             return nil
         }
         if kind == "turn_completed", let prompt {
@@ -32,7 +50,7 @@ struct GrokTurnState: Equatable {
             guard !retired.contains(prompt), promptID == nil || promptID == prompt, date >= updatedAt else { return history }
             promptID = prompt; tokens = spend?.tokens; updatedAt = date
             switch update["stop_reason"] as? String {
-            case "end_turn", "stop_sequence": phase = .completed
+            case "end_turn", "stop_sequence", "stop": phase = .completed
             case "cancelled", "canceled", "user_cancelled", "max_turns", "refusal": phase = .cancelled
             case "error", "failed": phase = .failed
             default: phase = .ended
@@ -78,10 +96,15 @@ struct GrokSessionScan {
 }
 
 actor GrokSessionReader {
+    private static let maxLineBytes = 16_777_216
+    private static let scanByteBudget = 67_108_864
+    private static let refreshInterval: TimeInterval = 4
+
     private struct State {
         let id: String; let cwd: String; var title: String; var model: String?; let url: URL
         var inode: UInt64 = 0; var offset: UInt64 = 0; var pending = Data(); var skippingLine = false
         var modified = Date.distantPast; var size: UInt64 = 0
+        var lastEventAt = Date.distantPast
         var turn = GrokTurnState()
         var spends: [String: (Date, GrokSpend)] = [:]
         var caughtUp = false
@@ -94,18 +117,27 @@ actor GrokSessionReader {
     private var discoveryComplete = true
     init(home: URL) { self.home = home }
 
+    private static func normalizedPath(_ path: String) -> String {
+        guard path.count > 1, path.hasSuffix("/") else { return path }
+        var trimmed = path
+        while trimmed.count > 1 && trimmed.hasSuffix("/") { trimmed.removeLast() }
+        return trimmed
+    }
+
     /// Registry entries are accepted only for a current same-user Grok process with the same start time.
     static func liveIDs(home: URL, evidence: [String: (cwd: String, lastEvent: Date)]? = nil,
-                        lookup: (Int32, Double) -> Bool = validProcess) -> Set<String> {
+                        lookup: ((Int32, Double) -> Bool)? = nil) -> Set<String> {
+        let validator = lookup ?? { pid, start in validProcess(pid, start, home: home) }
         guard let data = GrokJSON.read(home.appendingPathComponent("active_sessions.json"), maximum: 262_144),
               let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]], list.count <= 256 else { return [] }
         let valid = list.compactMap { item -> String? in
             guard let id = item["session_id"] as? String, UUID(uuidString: id) != nil,
                   let pid = GrokJSON.integer(item["pid"]), pid > 1, pid <= Int(Int32.max),
                   let start = GrokJSON.number(item["pid_start"]), start > 0,
-                  lookup(Int32(pid), start / 1_000_000) else { return nil }
+                  validator(Int32(pid), start / 1_000_000) else { return nil }
             if let evidence {
-                guard let session = evidence[id], let cwd = item["cwd"] as? String, cwd == session.cwd,
+                guard let session = evidence[id], let cwd = item["cwd"] as? String,
+                      normalizedPath(cwd) == normalizedPath(session.cwd),
                       session.lastEvent.timeIntervalSince1970 >= start / 1_000_000 - 1 else { return nil }
             }
             return id
@@ -114,6 +146,9 @@ actor GrokSessionReader {
         return Set(groups.filter { $0.value.count == 1 }.map(\.key))
     }
     static func validProcess(_ pid: Int32, _ start: Double) -> Bool {
+        validProcess(pid, start, home: nil)
+    }
+    static func validProcess(_ pid: Int32, _ start: Double, home: URL?) -> Bool {
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid], info = kinfo_proc()
         var size = MemoryLayout<kinfo_proc>.size
         guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0, size == MemoryLayout<kinfo_proc>.size,
@@ -122,21 +157,31 @@ actor GrokSessionReader {
         guard abs(Double(stamp.tv_sec) + Double(stamp.tv_usec) / 1_000_000 - start) < 0.00001 else { return false }
         var bytes = [CChar](repeating: 0, count: 4096)
         guard proc_pidpath(pid, &bytes, UInt32(bytes.count)) > 0 else { return false }
-        let name = URL(fileURLWithPath: String(cString: bytes)).lastPathComponent
         let path = String(cString: bytes)
-        if name == "grok-native" && path.contains("/@xai-official/grok/bin/") { return true }
+        let url = URL(fileURLWithPath: path)
+        let name = url.lastPathComponent
+        if (name == "grok-native" || name == "grok") && path.contains("/@xai-official/grok/bin/") { return true }
+        let parentDir = url.deletingLastPathComponent().resolvingSymlinksInPath()
         let defaultBin = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".grok/bin").resolvingSymlinksInPath()
-        return (name == "grok" || name.hasPrefix("grok-1."))
-            && URL(fileURLWithPath: path).deletingLastPathComponent().resolvingSymlinksInPath() == defaultBin
+        let homeBin = home?.appendingPathComponent("bin").resolvingSymlinksInPath()
+        let isVersionedGrok = name == "grok" || name.hasPrefix("grok-1.") || name.hasPrefix("grok-2.")
+        if isVersionedGrok && (parentDir == defaultBin || parentDir == homeBin) { return true }
+        let resolvedPath = url.resolvingSymlinksInPath().path
+        for candidate in ["/opt/homebrew/bin/grok", "/usr/local/bin/grok"] where FileManager.default.isExecutableFile(atPath: candidate) {
+            if resolvedPath == URL(fileURLWithPath: candidate).resolvingSymlinksInPath().path { return true }
+        }
+        return false
     }
 
     func scan(now: Date = Date()) -> GrokSessionScan {
         let live = Self.liveIDs(home: home)
-        if now.timeIntervalSince(lastDiscovery) >= 30 || !live.isSubset(of: Set(states.keys)) { discover(); lastDiscovery = now }
-        let historyDue = now.timeIntervalSince(lastHistory) >= 30
+        if now.timeIntervalSince(lastDiscovery) >= Self.refreshInterval || !live.isSubset(of: Set(states.keys)) {
+            discover(); lastDiscovery = now
+        }
+        let historyDue = now.timeIntervalSince(lastHistory) >= Self.refreshInterval
         if historyDue { lastHistory = now }
-        var budget = 8_388_608
-        for key in states.keys.sorted(by: { live.contains($0) != live.contains($1) ? live.contains($0) : $0 < $1 }) {
+        var budget = Self.scanByteBudget
+        for key in states.keys.sorted(by: { live.contains($0) != live.contains($1) ? live.contains($0) : $0 > $1 }) {
             guard var state = states[key], historyDue || live.contains(key) || !state.caughtUp else { continue }
             read(&state, budget: &budget); states[key] = state
         }
@@ -160,7 +205,7 @@ actor GrokSessionReader {
         let complete = discoveryComplete && states.values.allSatisfy { $0.caughtUp && !$0.corrupt }
         let sessions = states.values.map { s in GrokSessionScan.Session(id: s.id, cwd: s.cwd, title: s.title, model: s.model,
             turn: s.turn, caughtUp: s.caughtUp, totalTokens: s.spends.values.reduce(0) { GrokJSON.add($0, $1.1.tokens) }) }
-        let evidence = states.mapValues { (cwd: $0.cwd, lastEvent: $0.turn.updatedAt) }
+        let evidence = states.mapValues { (cwd: $0.cwd, lastEvent: max($0.lastEventAt, $0.turn.updatedAt)) }
         let verifiedLive = Self.liveIDs(home: home, evidence: evidence)
         return .init(sessions: sessions, usage: .init(days: days.values.sorted { $0.date < $1.date }, complete: complete,
             sessionCount: states.count, updatedAt: now), liveIDs: verifiedLive, registeredIDs: live)
@@ -198,13 +243,25 @@ actor GrokSessionReader {
     private func read(_ state: inout State, budget: inout Int) {
         let url = state.url.appendingPathComponent("updates.jsonl")
         let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
-        guard fd >= 0 else { state.caughtUp = false; return }; defer { close(fd) }
+        if fd < 0 {
+            var missingCheck = stat()
+            if errno == ENOENT && lstat(url.path, &missingCheck) != 0 && errno == ENOENT {
+                state.inode = 0; state.offset = 0; state.size = 0
+                state.pending.removeAll(keepingCapacity: true); state.skippingLine = false
+                state.turn = .init(); state.spends = [:]; state.corrupt = false; state.caughtUp = true
+            } else {
+                state.caughtUp = false
+            }
+            return
+        }
+        defer { close(fd) }
         var statInfo = stat()
         guard fstat(fd, &statInfo) == 0, statInfo.st_uid == getuid(), statInfo.st_mode & S_IFMT == S_IFREG, statInfo.st_size >= 0 else { state.caughtUp = false; return }
         let size = UInt64(statInfo.st_size), inode = UInt64(statInfo.st_ino)
         let modified = Date(timeIntervalSince1970: Double(statInfo.st_mtimespec.tv_sec) + Double(statInfo.st_mtimespec.tv_nsec) / 1e9)
         if state.inode != inode || size < state.offset || (size == state.size && state.modified != modified) {
-            state.offset = 0; state.pending = Data(); state.skippingLine = false; state.turn = .init(); state.spends = [:]; state.corrupt = false
+            state.offset = 0; state.pending = Data(); state.skippingLine = false; state.lastEventAt = .distantPast
+            state.turn = .init(); state.spends = [:]; state.corrupt = false
         }
         state.inode = inode; state.size = size; state.modified = modified
         while state.offset < size && budget > 0 {
@@ -216,10 +273,13 @@ actor GrokSessionReader {
             var cursor = buffer.startIndex
             while let end = buffer[cursor...].firstIndex(of: 10) {
                     let fragment = buffer[cursor..<end]
-                    if !state.skippingLine && state.pending.count + fragment.count <= 1_048_576 { state.pending.append(fragment) }
+                    if !state.skippingLine && state.pending.count + fragment.count <= Self.maxLineBytes { state.pending.append(fragment) }
                     else { state.skippingLine = true; state.corrupt = true }
                     if !state.skippingLine, !state.pending.isEmpty {
                         if let object = GrokJSON.object(state.pending) {
+                            if let eventDate = GrokJSON.eventDate(object), eventDate > state.lastEventAt {
+                                state.lastEventAt = eventDate
+                            }
                             if let params = object["params"] as? [String: Any], let update = params["update"] as? [String: Any],
                                update["sessionUpdate"] as? String == "turn_completed",
                                GrokSpend.decode(update["usage"]) == nil || GrokJSON.eventDate(object) == nil {
@@ -233,7 +293,7 @@ actor GrokSessionReader {
             }
             if !state.skippingLine {
                 let fragment = buffer[cursor...]
-                if state.pending.count + fragment.count <= 1_048_576 { state.pending.append(fragment) }
+                if state.pending.count + fragment.count <= Self.maxLineBytes { state.pending.append(fragment) }
                 else { state.pending.removeAll(keepingCapacity: true); state.skippingLine = true; state.corrupt = true }
             }
         }

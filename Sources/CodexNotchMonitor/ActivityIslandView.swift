@@ -19,6 +19,24 @@ enum IslandUsageProvider: String, CaseIterable {
     case claude = "Claude Code"
     case grok = "Grok CLI"
     case antigravity = "Antigravity"
+
+    init(provider: String) {
+        switch provider {
+        case "Claude Code": self = .claude
+        case "Grok CLI": self = .grok
+        case "Antigravity": self = .antigravity
+        default: self = .codex
+        }
+    }
+
+    var petSpecies: IslandPetSpecies {
+        switch self {
+        case .codex: return .codex
+        case .claude: return .clawd
+        case .grok: return .grok
+        case .antigravity: return .antigravity
+        }
+    }
 }
 
 @MainActor
@@ -54,12 +72,70 @@ final class ActivityIslandViewModel: ObservableObject {
     var onAlertAction: ((SystemNotificationAction, IslandAlert) -> Void)?
     @Published var snapshot: ActivityIslandSnapshot?
     @Published var sessions: [ActivitySessionSnapshot] = [] {
-        didSet {
-            if let latest = sessions.max(by: { $0.updatedAt < $1.updatedAt }) { idlePetSpecies = .init(provider: latest.provider) }
+        didSet { syncIdleProvider(previous: oldValue) }
+    }
+    /// The agent whose task finished most recently; drives the idle pet and top-left quota percentage.
+    @Published private(set) var idleProvider: IslandUsageProvider = .codex
+    var idlePetSpecies: IslandPetSpecies { idleProvider.petSpecies }
+    private var lastFinishedAt: Date = .distantPast
+    var lastFinishedTimestamp: Date { lastFinishedAt }
+    func restoreIdleProvider(_ provider: IslandUsageProvider, finishedAt: Date = Date(timeIntervalSince1970: 0)) {
+        guard isProviderEnabled(provider) else { return }
+        if idleProvider != provider { idleProvider = provider }
+        lastFinishedAt = max(lastFinishedAt, finishedAt)
+    }
+    private func isProviderEnabled(_ provider: IslandUsageProvider) -> Bool {
+        switch provider {
+        case .codex: return true
+        case .claude: return claudeEnabled
+        case .grok: return grokEnabled
+        case .antigravity: return antigravityEnabled
         }
     }
-    /// The pet shown without a focused task: whoever worked most recently; Codex until Claude Code is ever seen.
-    private(set) var idlePetSpecies = IslandPetSpecies.codex
+    private func setIdleProvider(_ provider: IslandUsageProvider) {
+        if idleProvider != provider { idleProvider = provider }
+    }
+    private func syncIdleProvider(previous: [ActivitySessionSnapshot]) {
+        func isTerminal(_ row: ActivitySessionSnapshot) -> Bool { !row.phase.isActive }
+        func wasActive(_ row: ActivitySessionSnapshot) -> Bool {
+            previous.contains { $0.id == row.id && $0.turnID == row.turnID && $0.phase.isActive }
+        }
+        func wasTerminal(_ row: ActivitySessionSnapshot) -> Bool {
+            previous.contains { $0.id == row.id && $0.turnID == row.turnID && !$0.phase.isActive }
+        }
+        let transitionedToFinished = sessions.filter { isTerminal($0) && wasActive($0) }
+        if let latest = transitionedToFinished.max(by: { $0.updatedAt < $1.updatedAt }) {
+            lastFinishedAt = max(lastFinishedAt, latest.updatedAt)
+            setIdleProvider(.init(provider: latest.provider))
+            return
+        }
+        let freshFinished = sessions.filter {
+            isTerminal($0) && !wasTerminal($0) && !$0.isRetainedReceipt && $0.updatedAt >= lastFinishedAt
+        }
+        if let latest = freshFinished.max(by: { $0.updatedAt < $1.updatedAt }) {
+            lastFinishedAt = latest.updatedAt
+            setIdleProvider(.init(provider: latest.provider))
+            return
+        }
+        let endedSilently = previous.filter { old in
+            old.phase.isActive && !sessions.contains { $0.id == old.id }
+        }
+        if let latest = endedSilently.max(by: { $0.updatedAt < $1.updatedAt }) {
+            lastFinishedAt = max(lastFinishedAt, latest.updatedAt)
+            setIdleProvider(.init(provider: latest.provider))
+            return
+        }
+        if let latestFinished = sessions.filter(isTerminal).max(by: { $0.updatedAt < $1.updatedAt }),
+           latestFinished.updatedAt > lastFinishedAt {
+            lastFinishedAt = latestFinished.updatedAt
+            setIdleProvider(.init(provider: latestFinished.provider))
+            return
+        }
+        if lastFinishedAt == .distantPast,
+           let latestActive = sessions.max(by: { $0.updatedAt < $1.updatedAt }) {
+            setIdleProvider(.init(provider: latestActive.provider))
+        }
+    }
     @Published var presentation: ActivityIslandPresentation = .hidden
     @Published var reduceMotionOverride = false
     @Published var playbackVisible = false
@@ -82,12 +158,26 @@ final class ActivityIslandViewModel: ObservableObject {
     @Published var claudeStatusLineEnabled = false
     @Published var claudeUsage: ClaudeCodeUsageSummary?
     @Published var claudeLimits: ClaudeCodeRateLimits?
-    @Published var grokEnabled = false
+    @Published var grokEnabled = false {
+        didSet {
+            if !grokEnabled {
+                if usageProvider == .grok { usageProvider = .codex }
+                if idleProvider == .grok { idleProvider = .codex }
+            }
+        }
+    }
     @Published var grokQuota: GrokQuotaSnapshot?
     @Published var grokUsage: GrokUsageSummary?
     @Published var grokQuotaFailed = false
     @Published var grokQuotaStatus = "尚未查询"
-    @Published var antigravityEnabled = false
+    @Published var antigravityEnabled = false {
+        didSet {
+            if !antigravityEnabled {
+                if usageProvider == .antigravity { usageProvider = .codex }
+                if idleProvider == .antigravity { idleProvider = .codex }
+            }
+        }
+    }
     @Published var antigravityStatusLineEnabled = false
     @Published var antigravityQuota: AntigravityQuotaSnapshot?
     @Published var antigravityUsage: AntigravityUsageSummary?
@@ -102,6 +192,7 @@ final class ActivityIslandViewModel: ObservableObject {
         claudeEnabled = enabled
         if !enabled {
             if usageProvider == .claude { usageProvider = .codex }
+            if idleProvider == .claude { idleProvider = .codex }
             claudeUsage = nil; claudeLimits = nil
         }
     }
@@ -167,14 +258,62 @@ final class ActivityIslandViewModel: ObservableObject {
             ? "全部任务已完成" : "暂无运行任务"
     }
     var compactQuotaAccessibilitySummary: String {
-        idleSummary + "，剩余额度 " + compactQuotaPercent
+        idleSummary + "，" + idleProvider.rawValue + " 剩余额度 " + compactQuotaPercent
             + (sessions.isEmpty ? "" : "，\(sessions.count) 会话")
     }
+    var activeQuotaProvider: IslandUsageProvider {
+        if showsCompactQuota || sessions.isEmpty { return idleProvider }
+        if let row = ActivitySessionSnapshot.compactFocus(rows: sessions, selectedID: focusedSessionID, receipt: compactReceipt) {
+            return .init(provider: row.provider)
+        }
+        return idleProvider
+    }
+    var expandedQuotaProvider: IslandUsageProvider {
+        if let focus = sessions.first(where: { $0.id == (focusedSessionID ?? snapshot?.sessionID) })
+            ?? ActivitySessionSnapshot.compactFocus(rows: sessions, selectedID: nil, receipt: nil) {
+            return .init(provider: focus.provider)
+        }
+        return idleProvider
+    }
     var compactQuotaPercent: String {
-        guard !privacyMode, IslandFloatingQuotaPeriods.current(quotaState) else { return "—" }
-        let windows = IslandFloatingQuotaPeriods.windows(quotaState)
-        let window = windows.first { $0.windowDurationMinutes == 300 } ?? windows.first { $0.windowDurationMinutes == 10080 }
-        return window.map { "\($0.remainingPercent)%" } ?? "—"
+        compactQuotaPercent(for: idleProvider)
+    }
+    func compactQuotaPercent(for provider: IslandUsageProvider, now: Date = Date()) -> String {
+        guard !privacyMode else { return "—" }
+        switch provider {
+        case .codex:
+            guard IslandFloatingQuotaPeriods.current(quotaState) else { return "—" }
+            let windows = IslandFloatingQuotaPeriods.windows(quotaState)
+            let window = windows.first { $0.windowDurationMinutes == 300 } ?? windows.first { $0.windowDurationMinutes == 10080 }
+            return window.map { "\($0.remainingPercent)%" } ?? "—"
+        case .claude:
+            let fiveHour = IslandUsagePresentation.claudeQuota(
+                title: "5 小时额度", window: claudeLimits?.fiveHour,
+                capturedAt: claudeLimits?.capturedAt,
+                statusLineEnabled: claudeStatusLineEnabled, now: now
+            )
+            let sevenDay = IslandUsagePresentation.claudeQuota(
+                title: "每周额度", window: claudeLimits?.sevenDay,
+                capturedAt: claudeLimits?.capturedAt,
+                statusLineEnabled: claudeStatusLineEnabled, now: now
+            )
+            return (fiveHour.remainingPercent ?? sevenDay.remainingPercent).map { "\($0)%" } ?? "—"
+        case .grok:
+            let displayNow = GrokDisplayClock.now(sampled: now)
+            guard let quota = grokQuota, quota.isAvailable(at: displayNow) else { return "—" }
+            return "\(quota.remainingPercent)%"
+        case .antigravity:
+            guard antigravityStatusLineEnabled, let quota = antigravityQuota else { return "—" }
+            let staleLimit = AntigravityQuotaSnapshot.uiStaleThreshold
+            let active = quota.activeWindows(at: now, staleCutoff: staleLimit)
+            if let primary = active.min(by: { $0.remainingPercent < $1.remainingPercent }) {
+                return "\(primary.remainingPercent)%"
+            }
+            if quota.rolledOverGeminiFiveHour(at: now, staleCutoff: staleLimit) != nil {
+                return "100%"
+            }
+            return "—"
+        }
     }
     var onExpand: (() -> Void)?
     var onCollapse: (() -> Void)?
@@ -217,7 +356,8 @@ struct ActivityIslandView: View {
                     claimReplyCue: { model.claimReplyCue(for: $0) },
                     hasInlineApproval: model.approvalContent?(row)?.hasInlineControls == true,
                     clawdEnabled: model.clawdEnabled, clawdPixel: model.compactClawdPixel,
-                    quotaPercent: model.compactQuotaPercent, clawdPlaying: model.clawdEnabled && model.playbackVisible)
+                    quotaPercent: model.compactQuotaPercent(for: IslandUsageProvider(provider: row.provider)),
+                    clawdPlaying: model.clawdEnabled && model.playbackVisible)
                     .id("compact-task")
             } else if !compact && model.showsUsagePage {
                 ActivityIslandUsageDashboard(model: model)
@@ -231,7 +371,7 @@ struct ActivityIslandView: View {
                     effect: model.progressEffect, focusedID: model.focusedSessionID ?? model.snapshot?.sessionID,
                     reduceMotion: motionIsReduced, pinned: model.isPinned,
                     onPin: model.onPin, onSelect: model.onSelect, onSettings: model.onOpenSettings, onRefresh: model.onRefresh,
-                    onOpenUsage: model.onOpenUsage, quotaTitle: model.compactQuotaPercent,
+                    onOpenUsage: model.onOpenUsage, quotaTitle: model.compactQuotaPercent(for: model.expandedQuotaProvider),
                     claimReplyCue: { model.claimReplyCue(for: $0) }, approvalContent: model.approvalContent, onApprovalMeasured: { model.recordApprovalMeasurement($0) },
                     hardwareGap: model.metrics.hardwareGap)
                     .environment(\.islandLiquidGlassEnabled, model.material == .liquidGlass)
